@@ -42,6 +42,8 @@ COL_PHISHED = "Phished Yes/No"  # header per "files & column.txt"; steps.txt wri
 NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISHED]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
+# step 2.1 is every ID_COLS x FALSE_LOGIN_COLS pair - the six mappings in the SOP
+FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
@@ -128,11 +130,16 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
         log(f"! base file has no {', '.join(missing)} - matching on the rest")
 
     def matched(src, cols, email_only=False):
-        k = keys(src, cols)
-        cols_ = ["Employee Email"] if email_only else list(ident)
+        """OR over every (base identity column x source column) pair, each pair
+        logged with its own count so a mapping table can be checked row by row."""
         m = pd.Series(False, index=base.index)
-        for c in cols_:
-            m |= ident[c].isin(k)
+        for b in (["Employee Email"] if email_only else list(ident)):
+            for c in cols:
+                if c not in src.columns:
+                    continue
+                hit = ident[b].isin(set(norm(src[c]).dropna()))
+                log(f"    {b} <- {c}: {int(hit.sum())}")
+                m |= hit
         return m
 
     def step(n, name, ok):
@@ -158,7 +165,13 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
 
     step("2.1", "Submitted Data (false_login)", false_login is not None)
     if false_login is not None:
-        base.loc[matched(false_login, ["Email (SSO)", "Username", "Email"]), COL_OUTCOME] = "Submitted Data"
+        base.loc[matched(false_login, FALSE_LOGIN_COLS), COL_OUTCOME] = "Submitted Data"
+
+    # Blank means the outcome sources were never supplied; once any of them was,
+    # a row nothing matched has been looked up and missed, same as the reporting
+    # columns - say Not Found rather than leaving it ambiguous.
+    if any(f is not None for f in (mimecast, false_login_sso, false_login)):
+        base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
 
     # --- step 3: GoPhish
     step("3", "GoPhish activity", gophish is not None)
@@ -388,6 +401,20 @@ def check_read_any():
         assert list(read_any(p).columns) == ["a", "b"]
 
 
+def check_false_login_pairs():
+    """Each of the six ID_COLS x FALSE_LOGIN_COLS mappings must land on its own."""
+    for i, (bcol, scol) in enumerate([(b, s) for b in ID_COLS for s in FALSE_LOGIN_COLS]):
+        base = pd.DataFrame({"Employee Email": ["hit@x.com", "miss@x.com"],
+                             "SSOUPN as per Saviynt": ["hit@sso.x.com", "miss@sso.x.com"],
+                             "SSOUPN as per AD (O365)": ["hit@ad.x.com", "miss@ad.x.com"]})
+        fl = pd.DataFrame({c: [base.loc[0, bcol].upper() if c == scol else "other@x.com"]
+                           for c in FALSE_LOGIN_COLS})
+        final, _, _ = run(base, false_login=fl, log=lambda *_: None)
+        assert list(final[COL_OUTCOME]) == ["Submitted Data", NOT_FOUND], \
+            f"mapping {i + 1} ({bcol} <- {scol}): {list(final[COL_OUTCOME])}"
+        assert list(final[COL_PHISHED]) == ["Yes", "No"], list(final[COL_PHISHED])
+
+
 def check_lookup_fallback():
     """A real O365 export names the phisher in SenderAddress and our employee in
     RecipientAddress - matching the named column alone would report nobody."""
@@ -405,6 +432,7 @@ def check_lookup_fallback():
 
 def selftest():
     check_read_any()
+    check_false_login_pairs()
     check_lookup_fallback()
     final, ger, tabs = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
@@ -416,7 +444,7 @@ def selftest():
             "userclick": "User Click",        # no report, no GoPhish click - stays put
             "reported_down": "Email Opened",  # step 5 rule 1
             "click_wins": "Clicked Link",     # rule 2 overrides rule 1
-            "untouched": ""}
+            "untouched": NOT_FOUND}           # looked up by every outcome source, matched by none
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 

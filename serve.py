@@ -32,7 +32,8 @@ RUNS = ROOT / "runs"
 
 # key -> the column read_any looks for when the export has banner rows above the header
 NEED = {"base": "Employee Email", "mimecast": "To", "gophish": "email",
-        "o365": "SenderAddress", "soc": "User", "gophish_de": "email"}
+        "o365": "SenderAddress", "soc": "User", "gophish_de": "email",
+        "false_login": "Username", "false_login_sso": "Email"}
 SOURCES = ["base", "false_login", "false_login_sso", "mimecast",
            "gophish", "o365", "soc", "gophish_de"]
 PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
@@ -89,8 +90,7 @@ def summarise(df):
 
 
 def preview(df, n=25):
-    # step 1 columns only, while that is all the UI exposes
-    cols = [c for c in PREVIEW_HEAD if c in df.columns] + [pr.COL_O365, pr.COL_SOC, pr.COL_REPORTED]
+    cols = [c for c in PREVIEW_HEAD if c in df.columns] + pr.NEW_COLS
     head = df.loc[:, cols].head(n).astype(object).where(df.loc[:, cols].head(n).notna(), "")
     return {"columns": cols, "rows": head.astype(str).values.tolist()}
 
@@ -137,15 +137,14 @@ def do_run(payload, logs=None):
     final, _ger, _tabs = pr.run(log=logs.append, **frames)
     done("lookups done")
 
-    # One deliverable for step 1: the userbase plus the three columns this step
-    # fills. The other new columns belong to steps this UI does not run yet and
-    # would ship as empty, and the German split is part 2.
-    out = final.drop(columns=[pr.COL_OUTCOME, pr.COL_GOPHISH, pr.COL_PHISHED])
+    # One deliverable: the userbase plus the columns the steps above fill. The
+    # German split stays out of it - that is part 2.
+    out = final
     rows = len(out)
-    stem = "Step1_Report"
+    stem = "Final_Report"
     if rows <= XLSX_MAX_ROWS:
         done = stage(f"writing {stem}.xlsx ({rows} rows)")
-        pr.write_xlsx(run / f"{stem}.xlsx", {"Step 1": out})
+        pr.write_xlsx(run / f"{stem}.xlsx", {"Final Report": out})
         name = f"{stem}.xlsx"
     else:   # openpyxl writes ~1000 rows/s, so past the cap the one file is csv
         done = stage(f"writing {stem}.csv ({rows} rows, too many for xlsx)")

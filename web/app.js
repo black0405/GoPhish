@@ -1,10 +1,11 @@
 'use strict';
 
-// step 1 only for now: the reporting lookups. The rest return as steps get built.
+// the steps built so far: the reporting lookups, then Submitted Data.
 const SOURCES = [
-  ['base', 'Userbase file',        'required'],
-  ['o365', 'User Reported — O365', 'SenderAddress (C) → Reported (K)'],
-  ['soc',  'User Reported — SOC',  'User (C) → reported (D)'],
+  ['base',        'Userbase file',          'required'],
+  ['o365',        'User Reported — O365',   'SenderAddress (C) → Reported (K)'],
+  ['soc',         'User Reported — SOC',    'User (C) → reported (D)'],
+  ['false_login', 'False login — Submitted', 'Username / Email (SSO) → Submitted Data'],
 ];
 
 let sid = crypto.randomUUID();
@@ -133,7 +134,7 @@ function buildDrops() {
 function metrics(s) {
   return `<div class="metric rows"><div class="lab">rows</div><div class="val">${s.rows}</div></div>
           <div class="metric added"><div class="lab">reported yes</div><div class="val">${s.reported?.Yes || 0}</div></div>
-          <div class="metric removed"><div class="lab">reported no</div><div class="val">${s.reported?.No || 0}</div></div>`;
+          <div class="metric removed"><div class="lab">phished yes</div><div class="val">${s.phished?.Yes || 0}</div></div>`;
 }
 
 function chips(counts) {
@@ -150,9 +151,13 @@ function render(res) {
   const view = el('div', 'view');
   view.innerHTML = `
     <div class="st-head">
-      <h2 class="st-title"><small>${esc(res.run)}</small>Step 1 — result</h2>
+      <h2 class="st-title"><small>${esc(res.run)}</small>Result</h2>
       <div class="st-metrics">${metrics(res.final)}</div>
     </div>
+    <div class="preview-head"><span class="lab">Outcome</span></div>
+    <div class="chips">${chips(res.final.outcome)}</div>
+    <div class="preview-head"><span class="lab">Phished (Yes/No)</span></div>
+    <div class="chips">${chips(res.final.phished)}</div>
     <div class="preview-head"><span class="lab">Reported to O365</span></div>
     <div class="chips">${chips(res.final.o365)}</div>
     <div class="preview-head"><span class="lab">Reported to SOC</span></div>
@@ -192,9 +197,11 @@ function fillLog(res) {
     `run ${res.run} — ${s.rows} rows`,
     '',
     '── columns written ──',
+    summarise('Outcome', s.outcome),
     summarise('Reported to O365', s.o365),
     summarise('Reported to SOC', s.soc),
     `Reported (Yes/No): Yes ${s.reported.Yes || 0}, No ${s.reported.No || 0}`,
+    `Phished (Yes/No): Yes ${s.phished.Yes || 0}, No ${s.phished.No || 0}`,
     '',
     '── pipeline ──',
     ...res.log,
