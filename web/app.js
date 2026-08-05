@@ -165,6 +165,28 @@ function render(res) {
   $('results').replaceChildren(view);
 }
 
+/* ---- run log dock ---- */
+function fillLog(res) {
+  const s = res.final;
+  const updated = (c, hit) => `${esc(c)}: ${hit} updated, ${s[c === 'Reported to O365' ? 'o365' : 'soc']['Not Found'] || 0} Not Found`;
+  const lines = [
+    `run ${res.run} — ${s.rows} rows`,
+    '',
+    '── columns written ──',
+    updated('Reported to O365', s.o365['Reported to O365'] || 0),
+    updated('Reported to SOC', s.soc['Reported to SOC'] || 0),
+    `Reported (Yes/No): Yes ${s.reported.Yes || 0}, No ${s.reported.No || 0}`,
+    '',
+    '── pipeline ──',
+    ...res.log,
+  ];
+  $('logbody').innerHTML = lines.map((l) => `<div class="logrow">${esc(l) || '&nbsp;'}</div>`).join('');
+  $('log-btn').hidden = false;
+}
+
+$('log-btn').addEventListener('click', () => { $('logdock').hidden = !$('logdock').hidden; });
+$('log-hide').addEventListener('click', () => { $('logdock').hidden = true; });
+
 function placeholder(msg) {
   $('results').replaceChildren(el('div', 'view', `<div class="preview"><div class="empty">${esc(msg)}</div></div>`));
 }
@@ -178,6 +200,7 @@ $('run-btn').addEventListener('click', async () => {
     const res = await r.json();
     if (!r.ok) throw new Error(res.error || r.statusText);
     render(res);
+    fillLog(res);
     toast('good', `${res.final.rows} rows · ${res.german.rows} German`);
   } catch (e) {
     const msg = e.message === 'Failed to fetch' ? 'lost the server — is serve.py still running?' : e.message;
@@ -194,6 +217,8 @@ $('reset-btn').addEventListener('click', () => {
   for (const k of Object.keys(files)) delete files[k];
   sid = crypto.randomUUID();          // new session -> new run folder
   buildDrops();
+  $('logdock').hidden = true;
+  $('log-btn').hidden = true;
   $('run-btn').disabled = true;
   placeholder('drop the source files on the left, then run');
 });

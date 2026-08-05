@@ -18,6 +18,10 @@
         <h1>Phishing Report</h1>
         <div class="sub">test UI</div>
       </div>
+      <button class="ghost-btn" id="log-btn" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        Logs
+      </button>
     </div>
     <div class="top-right">
       <span class="srv" id="srv">checking…</span>
@@ -49,6 +53,17 @@
       <div class="panel-inner" id="results"></div>
     </section>
   </div>
+
+  <section class="logdock" id="logdock" hidden>
+    <div class="logdock-head">
+      <h2>Run log</h2>
+      <span class="logdock-hint">columns written, matches and Not Found counts, per step</span>
+      <div class="logdock-actions">
+        <button class="ghost-btn" id="log-hide">Hide</button>
+      </div>
+    </div>
+    <div class="logbody mono" id="logbody"></div>
+  </section>
 </div>
 
 <div class="toast-wrap" id="toasts" aria-live="polite"></div>

@@ -502,7 +502,7 @@ button{font-family:inherit}
 .srv.ok{border-color:rgba(84,208,138,.5);color:var(--grn);background:var(--grn-soft)}
 .srv.bad{border-color:rgba(224,87,75,.5);color:#f0a89f;background:rgba(224,87,75,.08)}
 .error-banner{background:rgba(224,87,75,.08);border:1px solid rgba(224,87,75,.4);color:#f0a89f;font-size:.82rem}
-.error-banner[hidden]{display:none}   /* author display:flex beats the UA [hidden] rule */
+.error-banner[hidden],.logdock[hidden]{display:none}   /* author display:flex beats the UA [hidden] rule */
 .drop .k .st{margin-left:auto;display:inline-grid;place-items:center;width:18px;height:18px;color:var(--grn)}
 .drop .k .st svg{width:14px;height:14px}
 .drop.err{border-style:solid;border-color:rgba(224,87,75,.6);background:rgba(224,87,75,.06)}
