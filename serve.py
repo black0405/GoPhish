@@ -50,14 +50,18 @@ def start_run(payload):
     session(sid)   # validates the sid
     if JOBS.get(sid, {}).get("state") == "running":
         return {"state": "running"}
-    JOBS[sid] = {"state": "running"}
+    # the worker appends to this list as it goes and /status hands it back on
+    # every poll, so the page shows the stage a slow run is sitting in
+    logs = []
+    JOBS[sid] = {"state": "running", "log": logs}
 
     def work():
         try:
-            JOBS[sid] = {"state": "done", "result": do_run(payload)}
+            JOBS[sid] = {"state": "done", "result": do_run(payload, logs), "log": logs}
         except Exception as exc:
             traceback.print_exc()
-            JOBS[sid] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"}
+            logs.append(f"! {type(exc).__name__}: {exc}")
+            JOBS[sid] = {"state": "error", "error": f"{type(exc).__name__}: {exc}", "log": logs}
 
     threading.Thread(target=work, daemon=True).start()
     return {"state": "running"}
@@ -91,45 +95,62 @@ def preview(df, n=25):
     return {"columns": cols, "rows": head.astype(str).values.tolist()}
 
 
-def do_run(payload):
-    """payload: {"sid": ...} - the files are already on disk from /upload."""
+def do_run(payload, logs=None):
+    """payload: {"sid": ...} - the files are already on disk from /upload.
+
+    `logs` is the live list /status streams back; stages announce themselves
+    before they start and rewrite their own line with the timing when they
+    finish, so a stalled run names the file it is stuck on."""
     sess = session(payload.get("sid"))
     run, uploaded = sess["dir"], sess["files"]
     if "base" not in uploaded:
         raise ValueError("The Userbase file is required")
 
-    # every stage is timed: on a slow run the log has to name the stage that ate
-    # the time, or the only report back is "it took half an hour"
     started = time.perf_counter()
-    def took(t):
-        return f"{time.perf_counter() - t:.1f}s"
+    logs = [] if logs is None else logs
+    logs.append(pr.XL_NOTE)
 
-    logs = [pr.XL_NOTE]
+    def stage(msg):
+        """Append '<msg>…' now; the returned call closes it out with the timing."""
+        logs.append(f"{msg}…")
+        i, t = len(logs) - 1, time.perf_counter()
+
+        def done(text):
+            line = f"{text} ({time.perf_counter() - t:.1f}s)"
+            if len(logs) - 1 == i:      # nothing streamed under it - rewrite in place
+                logs[i] = line
+            else:                       # sub-steps landed below, so close it off below them
+                logs[i] = f"{msg}:"
+                logs.append(line)
+
+        return done
+
     frames = {}
     for key in SOURCES:
         if key in uploaded:
-            t = time.perf_counter()
+            name, mb = uploaded[key].name, uploaded[key].stat().st_size / 1e6
+            done = stage(f"reading {name} ({mb:.1f} MB)")
             frames[key] = pr.read_any(uploaded[key], NEED.get(key))
-            logs.append(f"read {uploaded[key].name}: {len(frames[key])} rows ({took(t)})")
+            done(f"read {name}: {len(frames[key])} rows")
 
-    t = time.perf_counter()
+    done = stage("running the lookups")
     final, ger, tabs = pr.run(log=logs.append, **frames)
-    logs.append(f"  lookups done ({took(t)})")
+    done("lookups done")
 
     files = []
     def emit(stem, sheets):
         rows = sum(len(f) for f in sheets.values())
         if len(sheets) == 1:   # single-sheet deliverables also ship as csv
-            t = time.perf_counter()
+            done = stage(f"writing {stem}.csv ({rows} rows)")
             next(iter(sheets.values())).to_csv(run / f"{stem}.csv", index=False)
             files.append({"name": f"{stem}.csv", "url": f"/runs/{run.name}/{stem}.csv"})
-            logs.append(f"wrote {stem}.csv ({took(t)})")
+            done(f"wrote {stem}.csv")
         # xlsx is ~60x slower to write than csv; above the cap it is skipped and logged
         if rows <= XLSX_MAX_ROWS:
-            t = time.perf_counter()
+            done = stage(f"writing {stem}.xlsx ({rows} rows)")
             pr.write_xlsx(run / f"{stem}.xlsx", sheets)
             files.append({"name": f"{stem}.xlsx", "url": f"/runs/{run.name}/{stem}.xlsx"})
-            logs.append(f"wrote {stem}.xlsx ({took(t)})")
+            done(f"wrote {stem}.xlsx")
         else:
             logs.append(f"{stem}.xlsx skipped ({rows} rows > {XLSX_MAX_ROWS}) - use the csv")
 
@@ -137,7 +158,7 @@ def do_run(payload):
     emit("German_Report", {"German Report": ger})
     if tabs:
         emit("GoPhish_Tabs", tabs)
-    logs.append(f"total {took(started)}")
+    logs.append(f"total {time.perf_counter() - started:.1f}s")
 
     return {"run": run.name, "log": logs, "files": files,
             "final": summarise(final), "german": summarise(ger),

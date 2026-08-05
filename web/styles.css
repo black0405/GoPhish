@@ -306,8 +306,13 @@ button{font-family:inherit}
 .logrow.lv-resp .ll{color:var(--grn)}
 .logrow.lv-resp .lm{color:var(--muted)}
 .logrow.lv-info .ll{color:var(--gold)}
-.logrow.lv-error{background:rgba(224,87,75,.10)}
+.logrow.lv-error{background:rgba(224,87,75,.10);color:var(--red)}
 .logrow.lv-error .ll,.logrow.lv-error .lm{color:var(--red)}
+/* the stage still running - it rewrites itself with a timing when it finishes */
+.logrow.run{color:var(--gold)}
+.logrow.run::after{content:'';width:6px;height:6px;margin:auto 0;border-radius:50%;
+  background:var(--gold);box-shadow:0 0 8px var(--gold);animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
 @media (max-width:860px){.logdock-hint{display:none}}
 
 /* ---------- start screen: run mode + SOP ---------- */

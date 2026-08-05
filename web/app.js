@@ -166,6 +166,20 @@ function render(res) {
 }
 
 /* ---- run log dock ---- */
+// The dock is the log page: it opens when a run starts and fills while the run
+// is still going, so a slow stage is visible as it happens, not after.
+function putLog(lines) {
+  $('logbody').innerHTML = lines
+    .map((l) => {
+      const cls = l.startsWith('!') ? ' lv-error' : l.endsWith('…') ? ' run' : '';
+      return `<div class="logrow${cls}">${esc(l) || '&nbsp;'}</div>`;
+    })
+    .join('');
+  $('logbody').scrollTop = $('logbody').scrollHeight;
+  $('log-btn').hidden = false;
+  $('logdock').hidden = false;
+}
+
 function fillLog(res) {
   const s = res.final;
   const summarise = (name, m) => {
@@ -185,8 +199,7 @@ function fillLog(res) {
     '── pipeline ──',
     ...res.log,
   ];
-  $('logbody').innerHTML = lines.map((l) => `<div class="logrow">${esc(l) || '&nbsp;'}</div>`).join('');
-  $('log-btn').hidden = false;
+  putLog(lines);
 }
 
 $('log-btn').addEventListener('click', () => { $('logdock').hidden = !$('logdock').hidden; });
@@ -213,10 +226,13 @@ async function awaitRun() {
       if (++misses >= 4) throw new Error('lost the server — is serve.py still running?');
       continue;
     }
+    if (st.log?.length) putLog(st.log);   // the worker's log so far, every poll
     if (st.state === 'done') return st.result;
     if (st.state === 'error') throw new Error(st.error);
     if (st.state === 'unknown') throw new Error('server restarted mid-run — hit Run again');
-    placeholder(`processing… ${Math.round((Date.now() - t0) / 1000)}s`);
+    const secs = Math.round((Date.now() - t0) / 1000);
+    const now = st.log?.length ? st.log[st.log.length - 1].replace(/…$/, '') : 'starting';
+    placeholder(`${now} — ${secs}s elapsed`);
   }
 }
 
@@ -224,6 +240,7 @@ $('run-btn').addEventListener('click', async () => {
   $('busybar').classList.add('on');
   $('run-btn').disabled = true;
   placeholder('starting…');
+  putLog(['starting the run…']);   // open the log page for the whole run, not just at the end
   try {
     const r = await fetch('/run', { method: 'POST', body: JSON.stringify({ sid }) });
     const out = await r.json();
