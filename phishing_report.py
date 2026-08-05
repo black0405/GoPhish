@@ -33,6 +33,7 @@ COL_PHISHED = "Phished Yes/No"  # header per "files & column.txt"; steps.txt wri
 NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISHED]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
+NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 DE_EVENTS = ["Email Sent", "Clicked Link", "Submitted Data"]  # low -> high precedence
@@ -143,16 +144,23 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
             tabs[f"GoPhish {name}"] = frame
             base.loc[matched(frame, ["email"], email_only=True), COL_GOPHISH] = name
 
-    # --- step 4: reporting
+    # --- step 4: reporting. The lookup is on Employee Email only, and a row that
+    # matches nobody is written as "Not Found" rather than left blank - blank means
+    # the source file was not supplied at all.
+    def lookup(src, col, cols, label):
+        hit = matched(src, cols, email_only=True)
+        base[col] = hit.map({True: col, False: NOT_FOUND})
+        log(f"    {int(hit.sum())} matched, {int((~hit).sum())} {NOT_FOUND.lower()}")
+
     step("4.1", "Reported to O365", o365 is not None)
     if o365 is not None:
-        base.loc[matched(o365, ["SenderAddress"], email_only=True), COL_O365] = COL_O365
+        lookup(o365, COL_O365, ["SenderAddress"], "O365")
 
     step("4.2", "Reported to SOC", soc is not None)
     if soc is not None:
-        base.loc[matched(soc, ["User"], email_only=True), COL_SOC] = COL_SOC
+        lookup(soc, COL_SOC, ["User"], "SOC")
 
-    base[COL_REPORTED] = (base[COL_O365].ne("") | base[COL_SOC].ne("")).map({True: "Yes", False: "No"})
+    base[COL_REPORTED] = (base[COL_O365].eq(COL_O365) | base[COL_SOC].eq(COL_SOC)).map({True: "Yes", False: "No"})
 
     # --- step 5: reconcile. Rule 2 runs second, so a confirmed GoPhish click
     # beats the "they reported it" downgrade.
@@ -216,6 +224,7 @@ def main(argv=None):
     ap.add_argument("--soc")
     ap.add_argument("--gophish-de", help="German GoPhish events")
     ap.add_argument("--out", default="output")
+    ap.add_argument("--no-xlsx", action="store_true", help="CSV only - much faster on big files")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--write-samples", metavar="DIR", help="dump the selftest fixtures as .xlsx")
     a = ap.parse_args(argv)
@@ -242,13 +251,19 @@ def main(argv=None):
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    write_xlsx(out / "Final_Report.xlsx", {"Final Report": final})
-    write_xlsx(out / "German_Report.xlsx", {"German Report": ger})
-    if tabs:
-        write_xlsx(out / "GoPhish_Tabs.xlsx", tabs)
+    # .csv costs ~0.4s at 200k rows where .xlsx costs ~30s, so it is always written
+    # and the slow one can be turned off while iterating on the rules
+    final.to_csv(out / "Final_Report.csv", index=False)
+    ger.to_csv(out / "German_Report.csv", index=False)
+    if not a.no_xlsx:
+        write_xlsx(out / "Final_Report.xlsx", {"Final Report": final})
+        write_xlsx(out / "German_Report.xlsx", {"German Report": ger})
+        if tabs:
+            write_xlsx(out / "GoPhish_Tabs.xlsx", tabs)
 
-    print(f"\nFinal_Report.xlsx  {len(final)} rows\n{counts(final)}")
-    print(f"\nGerman_Report.xlsx {len(ger)} rows\n{counts(ger)}")
+    ext = "csv" if a.no_xlsx else "csv + xlsx"
+    print(f"\nFinal_Report ({ext})  {len(final)} rows\n{counts(final)}")
+    print(f"\nGerman_Report ({ext}) {len(ger)} rows\n{counts(ger)}")
     print(f"\nwritten to {out.resolve()}")
     return 0
 
@@ -319,6 +334,11 @@ def selftest():
     assert f.loc["userclick", COL_REPORTED] == "No"
     assert f.loc["userclick", COL_GOPHISH] == "Email Sent"
     assert f.loc["click_wins", COL_O365] == COL_O365
+    assert f.loc["de_rule1", COL_SOC] == COL_SOC
+    # every row the lookup missed says so, in both columns
+    assert f.loc["untouched", COL_O365] == NOT_FOUND and f.loc["untouched", COL_SOC] == NOT_FOUND
+    assert f.loc["click_wins", COL_SOC] == NOT_FOUND
+    assert set(f[COL_O365]) == {COL_O365, NOT_FOUND}, set(f[COL_O365])
 
     # 3.1: Linux dropped, Linux+Android kept.
     kept = set(tabs["GoPhish Clicked Link"]["email"])
