@@ -36,6 +36,7 @@ SOURCES = ["base", "false_login", "false_login_sso", "mimecast",
            "gophish", "o365", "soc", "gophish_de"]
 PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
 
+XLSX_MAX_ROWS = 100_000   # above this, deliverables are csv-only (xlsx write is minutes)
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
 SESSIONS = {}  # sid -> {"dir": Path, "files": {key: Path}}
 
@@ -85,14 +86,22 @@ def do_run(payload):
     final, ger, tabs = pr.run(log=logs.append, **frames)
 
     files = []
-    def emit(name, sheets):
-        pr.write_xlsx(run / name, sheets)
-        files.append({"name": name, "url": f"/runs/{run.name}/{name}"})
+    def emit(stem, sheets):
+        rows = sum(len(f) for f in sheets.values())
+        if len(sheets) == 1:   # single-sheet deliverables also ship as csv
+            next(iter(sheets.values())).to_csv(run / f"{stem}.csv", index=False)
+            files.append({"name": f"{stem}.csv", "url": f"/runs/{run.name}/{stem}.csv"})
+        # xlsx is ~60x slower to write than csv; above the cap it is skipped and logged
+        if rows <= XLSX_MAX_ROWS:
+            pr.write_xlsx(run / f"{stem}.xlsx", sheets)
+            files.append({"name": f"{stem}.xlsx", "url": f"/runs/{run.name}/{stem}.xlsx"})
+        else:
+            logs.append(f"{stem}.xlsx skipped ({rows} rows > {XLSX_MAX_ROWS}) - use the csv")
 
-    emit("Final_Report.xlsx", {"Final Report": final})
-    emit("German_Report.xlsx", {"German Report": ger})
+    emit("Final_Report", {"Final Report": final})
+    emit("German_Report", {"German Report": ger})
     if tabs:
-        emit("GoPhish_Tabs.xlsx", tabs)
+        emit("GoPhish_Tabs", tabs)
 
     return {"run": run.name, "log": logs, "files": files,
             "final": summarise(final), "german": summarise(ger),

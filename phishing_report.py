@@ -24,6 +24,12 @@ from pathlib import Path
 
 import pandas as pd
 
+try:  # rust xlsx reader, ~5x openpyxl on a 200k-row file; falls back silently
+    import python_calamine  # noqa: F401
+    _XL = {"engine": "calamine"}
+except ImportError:
+    _XL = {}
+
 COL_OUTCOME = "Outcome"
 COL_GOPHISH = "GoPhish"
 COL_O365 = "Reported to O365"
@@ -59,7 +65,7 @@ def read_any(path, need=None):
     """Read csv/xlsx as text. If `need` is missing, look for it in the first rows."""
     p = Path(path)
     csv = p.suffix.lower() in (".csv", ".txt")
-    rd = (lambda **k: pd.read_csv(p, dtype=str, **k)) if csv else (lambda **k: pd.read_excel(p, dtype=str, **k))
+    rd = (lambda **k: pd.read_csv(p, dtype=str, **k)) if csv else (lambda **k: pd.read_excel(p, dtype=str, **_XL, **k))
     df = rd()
     if need and need not in df.columns:
         probe = rd(header=None, nrows=15)
