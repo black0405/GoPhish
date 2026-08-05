@@ -1,0 +1,280 @@
+Part 1: Non-German Reporting
+Step 1: Start with the Userbase File
+ 
+This is your base file where all new columns will be created and updated.
+ 
+Create these columns:
+ 
+Outcome
+GoPhish
+Reported to O365
+Reported to SOC
+Reported (Yes/No)
+Phished (Yes/No)
+Step 2: Identify User Outcomes
+2.1 Check for Submitted Data
+ 
+Compare user identifiers between:
+ 
+Userbase File
+false_login_data
+ 
+Match using:
+ 
+Employee Email
+SSOUPN as per Saviynt
+SSOUPN as per AD (O365)
+ 
+If a match is found:
+ 
+Outcome = Submitted Data
+ 
+2.2 Check for Clicked Link
+ 
+Compare:
+ 
+Userbase File
+false_login_sso_data
+ 
+Match using:
+ 
+Employee Email
+SSOUPN as per Saviynt
+SSOUPN as per AD (O365)
+ 
+If a match is found:
+ 
+Outcome = Clicked Link
+ 
+2.3 Check Mimecast Activity
+ 
+Compare:
+ 
+Employee Email (Userbase)
+To (Mimecast)
+ 
+If a match exists:
+ 
+Populate Outcome with Mimecast Log Type, for example:
+ 
+User Click
+Email Opened
+Step 3: Process GoPhish Activity
+3.1 Clean GoPhish File
+ 
+Remove any record where:
+ 
+Details contains "Linux"
+AND does NOT contain "Android"
+ 
+Keep Android records.
+ 
+3.2 Split GoPhish Events
+ 
+Create two tabs:
+ 
+Clicked Link Tab
+ 
+Contains all Clicked Link events
+ 
+Email Sent Tab
+ 
+Contains all Email Sent events
+3.3 Populate GoPhish Column
+ 
+Match:
+ 
+Employee Email (Userbase)
+Email (GoPhish)
+ 
+Populate:
+ 
+Event Found  GoPhish ValueClicked Link  Clicked Link
+Email Sent  Email Sent
+Step 4: Validate Reporting Activity
+4.1 Check O365 Reporting
+ 
+Match:
+ 
+Employee Email
+SenderAddress (O365 Report)
+ 
+If matched:
+ 
+Reported to O365 = Reported to O365
+ 
+4.2 Check SOC Reporting
+ 
+Match:
+ 
+Employee Email
+User (SOC Report)
+ 
+If matched:
+ 
+Reported to SOC = Reported to SOC
+ 
+4.3 Populate Reported (Yes/No)
+ 
+If either:
+ 
+Reported to O365 has value OR
+Reported to SOC has value
+ 
+Then:
+ 
+Reported = Yes
+ 
+Otherwise:
+ 
+Reported = No
+ 
+Step 5: Reconcile Outcome
+Rule 1
+ 
+If:
+ 
+Outcome = User Click
+Reported = Yes
+ 
+Then:
+ 
+Outcome = Email Opened
+ 
+Reason: The user reported the email, so they are not considered phished.
+ 
+Rule 2
+ 
+If:
+ 
+Outcome = User Click
+GoPhish = Clicked Link
+ 
+Then:
+ 
+Outcome = Clicked Link
+ 
+Reason: GoPhish confirms the user actually clicked the phishing link.
+ 
+Step 6: Populate Phished (Yes/No)
+ 
+Based on the Final Outcome:
+ 
+Final Outcome  PhishedSubmitted Data  Yes
+Clicked Link  Yes
+Email Opened  No
+Email Sent  No
+Step 7: Save Non-German Output
+ 
+Final Userbase File now contains:
+ 
+Outcome
+GoPhish
+Reported to O365
+Reported to SOC
+Reported (Yes/No)
+Phished (Yes/No)
+ 
+Save the file.
+ 
+Part 2: German Reporting
+ 
+German processing starts using the completed output from the Non-German process.
+ 
+Step 1: Filter Germany Users
+ 
+From the completed report:
+ 
+Filter:
+ 
+Country = Germany
+ 
+Only German users are processed further.
+ 
+Step 2: Prepare German GoPhish File
+Remove Linux Records
+ 
+Delete records where:
+ 
+Details contains Linux
+AND does not contain Android
+Create Three Tabs
+ 
+Split events into:
+ 
+Submitted Data
+Clicked Link
+Email Sent
+Step 3: Update GoPhish Column
+ 
+Match:
+ 
+Employee Email
+Email from German GoPhish file
+ 
+Populate GoPhish with:
+ 
+Event Type  GoPhish ValueSubmitted Data  Submitted Data
+Clicked Link  Clicked Link
+Email Sent  Email Sent
+Step 4: Reconcile Outcomes
+Rule 1
+ 
+If:
+ 
+GoPhish = Submitted Data / Clicked Link / Email Sent
+Outcome = User Click
+Reported = Yes
+ 
+Then:
+ 
+Outcome = Email Opened
+ 
+Rule 2
+ 
+If:
+ 
+GoPhish = Submitted Data / Clicked Link / Email Sent
+Outcome = User Click
+Reported = No
+ 
+Then:
+ 
+Outcome = Value from GoPhish Column
+ 
+Examples:
+ 
+GoPhish  Outcome Before  Reported  Outcome AfterSubmitted Data  User Click  No  Submitted Data
+Clicked Link  User Click  No  Clicked Link
+Email Sent  User Click  No  Email Sent
+Step 5: Populate Phished (Yes/No)
+ 
+Apply the same logic:
+ 
+Final Outcome  PhishedSubmitted Data  Yes
+Clicked Link  Yes
+Email Opened  No
+Email Sent  No
+Step 6: Perform Final Validation
+ 
+Verify:
+ 
+✅ Germany users filtered correctly
+ 
+✅ Linux non-Android users removed
+ 
+✅ GoPhish tabs created
+ 
+✅ GoPhish column populated
+ 
+✅ Reporting columns populated
+ 
+✅ Reported (Yes/No) populated
+ 
+✅ Outcome reconciliation completed
+ 
+✅ Phished (Yes/No) populated
+ 
+✅ Counts validated
+ 
+✅ Final output saved

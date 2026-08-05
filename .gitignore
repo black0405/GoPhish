@@ -1,0 +1,14 @@
+# runs hold uploaded source files - real employee data, never commit them
+runs/
+output/
+sample_data/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+~$*.xlsx

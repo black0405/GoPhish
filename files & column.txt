@@ -1,0 +1,159 @@
+False_login_data-Q2-Submitted
+
+Id
+User Id
+text before
+Username
+Email (SSO)
+Created At (IST)
+Outcome
+
+false_login_sso_data-Q2-Clicked Link
+
+Id
+User Id
+text
+Email
+Page Name
+Created At (IST)
+Outcome
+
+mimecast_combine
+
+URL
+From
+To
+reverse Lookup
+Subject
+Route
+Policy
+Scan Result
+Action
+Admin Override
+User Override
+Category
+User Awareness
+Date/Time
+Log Type
+Source File
+
+ GoPhish_Events_non_german
+
+email
+time
+message
+details
+
+
+
+User Reported-Microsoft 365Report
+
+MessageId
+Received
+SenderAddress
+RecipientAddress
+Subject
+Status
+ToIP
+FromIP
+Size
+MessageTraceId
+Reported 
+
+User Reported SOC-Support
+
+Time
+text
+User
+reported 
+
+Events_GermanOnly
+
+campaign_id
+email
+time
+message
+Sort
+details
+
+UserBase_V2
+
+Zone
+Country
+Global Employee ID
+Local Employee ID
+Employee Name
+Employee Status
+Worker Type
+Employee Group
+Management Level
+First Hire Date
+Last Hire Date
+Position Name
+Job Family Group
+Job Family
+Job Profile Description
+ABI Entity 2
+Macro Entity Level 2 (Zone)
+text before Email
+Employee Email
+CEO -1 and -2
+Band 4+
+Manager Employee ID Level 01
+Manager Name Level 01
+text before Saviynt
+SSOUPN as per Saviynt
+Zone as per Savient
+text before O365
+SSOUPN as per AD (O365)
+Zone as per AD
+Aurora (Yes/No)
+BSC (Yes/No)
+OT (Yes/No)
+EUR Validation
+MAZ Validation
+
+Final Report
+
+Zone
+Country
+Global Employee ID
+Local Employee ID
+Employee Name
+Employee Status
+Worker Type
+Employee Group
+Management Level
+First Hire Date
+Last Hire Date
+Position Name
+Job Family Group
+Job Family
+Job Profile Description
+ABI Entity 2
+Macro Entity Level 2 (Zone)
+text before Email
+Employee Email
+CEO -1 and -2
+Band 4+
+Manager Employee ID Level 01
+Manager Name Level 01
+text before Saviynt
+SSOUPN as per Saviynt
+Zone as per Savient
+text before O365
+SSOUPN as per AD (O365)
+Zone as per AD
+Aurora (Yes/No)
+BSC (Yes/No)
+OT (Yes/No)
+EUR Validation
+MAZ Validation
+Outcome
+GoPhish
+Reported to O365
+Reported to SOC
+Reported (Yes/No)
+Phished Yes/No
+
+
