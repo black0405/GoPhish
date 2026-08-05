@@ -39,7 +39,7 @@
       <div class="panel-inner">
         <div class="view collector">
           <div class="st-head"><h2 class="st-title"><small>steps 1 &amp; 2</small>Reporting &amp; Submitted Data</h2></div>
-          <p class="sop-purpose" style="padding:8px 0 14px">The reporting lookups match on Employee Email — a hit copies the report file's own reported value (e.g. soc-support), a miss writes Not Found, and Reported (Yes/No) is No only when both are Not Found. Submitted Data is every pairing of the three base identity columns with Username and Email (SSO); a row no pairing matches gets Outcome = Not Found.</p>
+          <p class="sop-purpose" style="padding:8px 0 14px">The reporting lookups match on Employee Email — a hit copies the report file's own reported value (e.g. soc-support), a miss writes Not Found, and Reported (Yes/No) is No only when both are Not Found. Outcome pairs the three base identity columns against the false-login files: Username and Email (SSO) give Submitted Data, Email gives Clicked Link, and Submitted Data wins where both hit. A row no pairing matches gets Outcome = Not Found.</p>
           <div class="drops" id="drops"></div>
           <div class="load-foot">
             <button class="btn primary wide" id="run-btn" disabled>Run pipeline</button>

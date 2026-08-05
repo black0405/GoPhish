@@ -6,6 +6,7 @@ const SOURCES = [
   ['o365',        'User Reported — O365',   'SenderAddress (C) → Reported (K)'],
   ['soc',         'User Reported — SOC',    'User (C) → reported (D)'],
   ['false_login', 'False login — Submitted', 'Username / Email (SSO) → Submitted Data'],
+  ['false_login_sso', 'False login SSO — Clicked', 'Email → Clicked Link'],
 ];
 
 let sid = crypto.randomUUID();

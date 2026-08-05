@@ -42,8 +42,9 @@ COL_PHISHED = "Phished Yes/No"  # header per "files & column.txt"; steps.txt wri
 NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISHED]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
-# step 2.1 is every ID_COLS x FALSE_LOGIN_COLS pair - the six mappings in the SOP
-FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]
+# each outcome step is every ID_COLS x <these> pair - the mapping tables in the SOP
+FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]      # 2.1, six pairs -> Submitted Data
+FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicked Link
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
@@ -161,7 +162,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
 
     step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
     if false_login_sso is not None:
-        base.loc[matched(false_login_sso, ["Email", "Username", "Email (SSO)"]), COL_OUTCOME] = "Clicked Link"
+        base.loc[matched(false_login_sso, FALSE_LOGIN_SSO_COLS), COL_OUTCOME] = "Clicked Link"
 
     step("2.1", "Submitted Data (false_login)", false_login is not None)
     if false_login is not None:
@@ -401,18 +402,29 @@ def check_read_any():
         assert list(read_any(p).columns) == ["a", "b"]
 
 
-def check_false_login_pairs():
-    """Each of the six ID_COLS x FALSE_LOGIN_COLS mappings must land on its own."""
-    for i, (bcol, scol) in enumerate([(b, s) for b in ID_COLS for s in FALSE_LOGIN_COLS]):
-        base = pd.DataFrame({"Employee Email": ["hit@x.com", "miss@x.com"],
-                             "SSOUPN as per Saviynt": ["hit@sso.x.com", "miss@sso.x.com"],
-                             "SSOUPN as per AD (O365)": ["hit@ad.x.com", "miss@ad.x.com"]})
-        fl = pd.DataFrame({c: [base.loc[0, bcol].upper() if c == scol else "other@x.com"]
-                           for c in FALSE_LOGIN_COLS})
-        final, _, _ = run(base, false_login=fl, log=lambda *_: None)
-        assert list(final[COL_OUTCOME]) == ["Submitted Data", NOT_FOUND], \
-            f"mapping {i + 1} ({bcol} <- {scol}): {list(final[COL_OUTCOME])}"
-        assert list(final[COL_PHISHED]) == ["Yes", "No"], list(final[COL_PHISHED])
+def check_outcome_pairs():
+    """Every mapping in the SOP tables must land on its own, and only the listed
+    source columns count - an identity sitting in an unlisted column is a miss."""
+    tables = [("false_login", FALSE_LOGIN_COLS, "Submitted Data", "Yes"),
+              ("false_login_sso", FALSE_LOGIN_SSO_COLS, "Clicked Link", "Yes")]
+    for kw, cols, outcome, phished in tables:
+        for bcol in ID_COLS:
+            for scol in cols:
+                base = pd.DataFrame({"Employee Email": ["hit@x.com", "miss@x.com"],
+                                     "SSOUPN as per Saviynt": ["hit@sso.x.com", "miss@sso.x.com"],
+                                     "SSOUPN as per AD (O365)": ["hit@ad.x.com", "miss@ad.x.com"]})
+                src = pd.DataFrame({c: [base.loc[0, bcol].upper() if c == scol else "other@x.com"]
+                                    for c in cols})
+                final, _, _ = run(base, log=lambda *_: None, **{kw: src})
+                where = f"{kw}: {bcol} <- {scol}"
+                assert list(final[COL_OUTCOME]) == [outcome, NOT_FOUND], f"{where}: {list(final[COL_OUTCOME])}"
+                assert list(final[COL_PHISHED]) == [phished, "No"], f"{where}: {list(final[COL_PHISHED])}"
+
+        # the same identity in a column the table does not list must not match
+        base = pd.DataFrame({"Employee Email": ["hit@x.com"]})
+        src = pd.DataFrame({"Some Other Column": ["hit@x.com"], **{c: ["other@x.com"] for c in cols}})
+        final, _, _ = run(base, log=lambda *_: None, **{kw: src})
+        assert list(final[COL_OUTCOME]) == [NOT_FOUND], f"{kw} matched an unlisted column"
 
 
 def check_lookup_fallback():
@@ -432,7 +444,7 @@ def check_lookup_fallback():
 
 def selftest():
     check_read_any()
-    check_false_login_pairs()
+    check_outcome_pairs()
     check_lookup_fallback()
     final, ger, tabs = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
