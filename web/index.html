@@ -20,9 +20,15 @@
       </div>
     </div>
     <div class="top-right">
+      <span class="srv" id="srv">checking…</span>
       <button class="ghost-btn" id="reset-btn">Reset</button>
     </div>
   </header>
+
+  <div class="error-banner" id="offline-banner" hidden>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span id="offline-why">Server not reachable.</span>
+  </div>
 
   <div class="stage" style="grid-template-columns:380px 1fr">
     <section class="panel">

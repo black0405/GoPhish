@@ -41,13 +41,15 @@ SESSIONS = {}  # sid -> {"dir": Path, "files": {key: Path}}
 
 
 def session(sid):
+    """Folder is derived from the sid and the file map is rebuilt from disk, so
+    an upload survives a server restart between picking files and hitting Run."""
     if not SID_RE.match(sid or ""):
         raise ValueError("bad session id")
     if sid not in SESSIONS:
-        run = RUNS / time.strftime("run_%Y%m%d_%H%M%S")
-        if run.exists():
-            run = run.with_name(f"{run.name}_{sid[:4]}")
-        SESSIONS[sid] = {"dir": run, "files": {}}
+        run = RUNS / f"run_{sid[:8]}"
+        files = {p.name.split("__", 1)[0]: p
+                 for p in sorted((run / "input").glob("*__*"))} if (run / "input").is_dir() else {}
+        SESSIONS[sid] = {"dir": run, "files": files}
     return SESSIONS[sid]
 
 
@@ -110,6 +112,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/health":
+            return self.send(200, json.dumps({"ok": True}))
         if path.startswith("/runs/"):
             target = (RUNS / path[len("/runs/"):]).resolve()
             if RUNS.resolve() not in target.parents or not target.is_file():

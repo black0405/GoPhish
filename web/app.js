@@ -32,42 +32,104 @@ function toast(kind, msg) {
   setTimeout(() => t.remove(), 3200);
 }
 
+/* ---- server connectivity ---- */
+// "Failed to fetch" is what the browser says both when serve.py is not running
+// and when this page was double-clicked open as file:// - surface each cause.
+let online = false;
+
+function setOnline(ok, why) {
+  online = ok;
+  const pill = $('srv');
+  pill.className = `srv ${ok ? 'ok' : 'bad'}`;
+  pill.textContent = ok ? 'server connected' : 'server offline';
+  pill.title = ok ? '' : why || '';
+  $('offline-banner').hidden = ok;
+  if (!ok && why) $('offline-why').textContent = why;
+  $('run-btn').disabled = !(online && files.base);
+}
+
+async function ping() {
+  if (location.protocol === 'file:') {
+    setOnline(false, 'This page was opened as a file. Start the backend with:  python serve.py  and open http://127.0.0.1:8020 instead.');
+    return;
+  }
+  try {
+    const r = await fetch('/health', { cache: 'no-store' });
+    setOnline((await r.json()).ok === true);
+  } catch {
+    setOnline(false, 'serve.py is not reachable. Start it with:  python serve.py  then reload this page.');
+  }
+}
+
+// POST one file as a raw body, reporting real upload progress (fetch cannot)
+function xhrUpload(key, file, onPct) {
+  return new Promise((resolve, reject) => {
+    const q = `sid=${sid}&key=${key}&name=${encodeURIComponent(file.name)}`;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/upload?${q}`);
+    xhr.timeout = 30 * 60 * 1000;
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onPct(e.loaded / e.total); };
+    xhr.onload = () => {
+      let out = {};
+      try { out = JSON.parse(xhr.responseText); } catch {}
+      xhr.status === 200 ? resolve(out) : reject(new Error(out.error || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('connection lost — is serve.py still running?'));
+    xhr.ontimeout = () => reject(new Error('upload timed out'));
+    xhr.send(file);   // browser streams the File off disk - no page memory used
+  });
+}
+
 function buildDrops() {
   const wrap = $('drops');
   wrap.innerHTML = '';
   for (const [key, label, hint] of SOURCES) {
     const card = el('div', 'drop');
-    card.innerHTML = `<div class="k">${FILE_ICON}<span>${esc(label)}</span></div>
+    card.innerHTML = `<div class="k">${FILE_ICON}<span>${esc(label)}</span><span class="st"></span></div>
                       <div class="f">${esc(hint)}</div>
+                      <div class="upbar"><i></i><b></b></div>
                       <input type="file" accept=".xlsx,.xls,.csv,.txt">`;
-    const input = card.querySelector('input');
     const shown = card.querySelector('.f');
+    const st = card.querySelector('.st');
+    const bar = card.querySelector('.upbar i');
+    const pct = card.querySelector('.upbar b');
+    const input = card.querySelector('input');
 
-    // uploaded as a raw body the moment it is picked - the browser streams the
-    // File off disk, so a 500 MB export costs no page memory
+    const state = (cls, badge) => {
+      card.classList.remove('filled', 'uploading', 'err');
+      if (cls) card.classList.add(cls);
+      st.innerHTML = badge;
+    };
+
     const take = async (file) => {
       if (!file) return;
-      card.classList.remove('filled');
-      shown.textContent = `uploading ${file.name} (${size(file.size)})…`;
+      if (location.protocol === 'file:') { ping(); return; }
+      delete files[key];
+      state('uploading', '');
+      bar.style.width = '0%'; pct.textContent = '0%';
+      shown.textContent = `uploading ${file.name} · ${size(file.size)}`;
       try {
-        const q = `sid=${sid}&key=${key}&name=${encodeURIComponent(file.name)}`;
-        const r = await fetch(`/upload?${q}`, { method: 'POST', body: file });
-        const out = await r.json();
-        if (!r.ok) throw new Error(out.error || r.statusText);
+        const out = await xhrUpload(key, file, (p) => {
+          bar.style.width = `${(p * 100).toFixed(0)}%`;
+          pct.textContent = `${(p * 100).toFixed(0)}%`;
+        });
         files[key] = file.name;
-        card.classList.add('filled');
-        shown.textContent = `${file.name} · ${size(out.bytes)}`;
+        state('filled', OK_ICON);
+        shown.textContent = `${file.name} · ${size(out.bytes)} — uploaded`;
+        toast('good', `${label} uploaded (${size(out.bytes)})`);
       } catch (e) {
-        shown.textContent = `upload failed — ${e.message}`;
+        state('err', '!');
+        shown.textContent = `${e.message} — click to retry`;
         toast('warn', `${label}: ${e.message}`);
+        ping();                       // find out whether the whole server is gone
       }
-      $('run-btn').disabled = !files.base;
+      $('run-btn').disabled = !(online && files.base);
     };
 
     input.addEventListener('change', () => take(input.files[0]));
-    card.addEventListener('dragover', (e) => { e.preventDefault(); card.style.borderColor = 'var(--gold)'; });
-    card.addEventListener('dragleave', () => { card.style.borderColor = ''; });
-    card.addEventListener('drop', (e) => { e.preventDefault(); card.style.borderColor = ''; take(e.dataTransfer.files[0]); });
+    card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('over'); });
+    card.addEventListener('dragleave', () => card.classList.remove('over'));
+    card.addEventListener('drop', (e) => { e.preventDefault(); card.classList.remove('over'); take(e.dataTransfer.files[0]); });
     wrap.appendChild(card);
   }
 }
@@ -130,11 +192,13 @@ $('run-btn').addEventListener('click', async () => {
     render(res);
     toast('good', `${res.final.rows} rows · ${res.german.rows} German`);
   } catch (e) {
-    placeholder(e.message);
-    toast('warn', e.message);
+    const msg = e.message === 'Failed to fetch' ? 'lost the server — is serve.py still running?' : e.message;
+    placeholder(msg);
+    toast('warn', msg);
+    ping();
   } finally {
     $('busybar').classList.remove('on');
-    $('run-btn').disabled = !files.base;
+    $('run-btn').disabled = !(online && files.base);
   }
 });
 
@@ -148,3 +212,5 @@ $('reset-btn').addEventListener('click', () => {
 
 buildDrops();
 placeholder('drop the source files on the left, then run');
+ping();
+setInterval(ping, 5000);   // keep the pill honest if the server dies mid-session

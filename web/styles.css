@@ -496,3 +496,23 @@ button{font-family:inherit}
 /* the footer is sticky over the scrolling card list - it has to be opaque */
 .view.collector .load-foot{background:#141110;border-top:1px solid var(--line);padding:12px 0 4px;margin-top:0}
 .actions a.btn{text-decoration:none}
+
+/* upload states */
+.srv{font-size:.68rem;padding:.35rem .7rem;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.srv.ok{border-color:rgba(84,208,138,.5);color:var(--grn);background:var(--grn-soft)}
+.srv.bad{border-color:rgba(224,87,75,.5);color:#f0a89f;background:rgba(224,87,75,.08)}
+.error-banner{background:rgba(224,87,75,.08);border:1px solid rgba(224,87,75,.4);color:#f0a89f;font-size:.82rem}
+.error-banner[hidden]{display:none}   /* author display:flex beats the UA [hidden] rule */
+.drop .k .st{margin-left:auto;display:inline-grid;place-items:center;width:18px;height:18px;color:var(--grn)}
+.drop .k .st svg{width:14px;height:14px}
+.drop.err{border-style:solid;border-color:rgba(224,87,75,.6);background:rgba(224,87,75,.06)}
+.drop.err .k .st{color:#f0a89f;font-weight:700}
+.drop.err .f{color:#f0a89f}
+.drop.over{border-color:var(--gold);background:var(--gold-soft)}
+.drop .upbar{display:none;position:relative;height:6px;margin-top:9px;border-radius:4px;background:rgba(255,255,255,.07);overflow:visible}
+.drop.uploading .upbar{display:block}
+.drop .upbar i{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:4px;
+  background:linear-gradient(90deg,var(--gold-2),var(--gold));transition:width .15s linear}
+.drop .upbar b{position:absolute;right:0;top:-17px;font-size:.62rem;font-weight:600;color:var(--gold)}
+.drop.uploading{border-color:var(--gold);border-style:solid}
+.drop.filled .f{color:var(--grn)}
