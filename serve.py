@@ -6,16 +6,22 @@
 Drop the source files in the browser, hit Run, read the counts, download the
 reports. Stdlib only on the server side - no framework, no extra dependency
 beyond what the pipeline itself already needs.
+
+Each file is streamed to disk on its own POST /upload the moment it is picked,
+so neither the page nor the server ever holds a whole export in memory; /run
+then only has to name the session.
 """
 import argparse
-import base64
 import json
 import mimetypes
+import re
+import sys
 import time
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 import phishing_report as pr
 
@@ -29,6 +35,20 @@ NEED = {"base": "Employee Email", "mimecast": "To", "gophish": "email",
 SOURCES = ["base", "false_login", "false_login_sso", "mimecast",
            "gophish", "o365", "soc", "gophish_de"]
 PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
+
+SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
+SESSIONS = {}  # sid -> {"dir": Path, "files": {key: Path}}
+
+
+def session(sid):
+    if not SID_RE.match(sid or ""):
+        raise ValueError("bad session id")
+    if sid not in SESSIONS:
+        run = RUNS / time.strftime("run_%Y%m%d_%H%M%S")
+        if run.exists():
+            run = run.with_name(f"{run.name}_{sid[:4]}")
+        SESSIONS[sid] = {"dir": run, "files": {}}
+    return SESSIONS[sid]
 
 
 def summarise(df):
@@ -48,23 +68,18 @@ def preview(df, n=25):
 
 
 def do_run(payload):
-    """payload: {key: {"name": filename, "data": base64}}. Returns the JSON reply."""
-    run = RUNS / time.strftime("run_%Y%m%d_%H%M%S")
-    (run / "input").mkdir(parents=True, exist_ok=True)
-    logs = []
+    """payload: {"sid": ...} - the files are already on disk from /upload."""
+    sess = session(payload.get("sid"))
+    run, uploaded = sess["dir"], sess["files"]
+    if "base" not in uploaded:
+        raise ValueError("The Userbase file is required")
 
+    logs = []
     frames = {}
     for key in SOURCES:
-        up = payload.get(key)
-        if not up:
-            continue
-        path = run / "input" / Path(up["name"]).name
-        path.write_bytes(base64.b64decode(up["data"]))
-        frames[key] = pr.read_any(path, NEED.get(key))
-        logs.append(f"read {path.name}: {len(frames[key])} rows")
-
-    if "base" not in frames:
-        raise ValueError("The Userbase file is required")
+        if key in uploaded:
+            frames[key] = pr.read_any(uploaded[key], NEED.get(key))
+            logs.append(f"read {uploaded[key].name}: {len(frames[key])} rows")
 
     final, ger, tabs = pr.run(log=logs.append, **frames)
 
@@ -106,15 +121,40 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         self.send(200, target.read_bytes(), ctype)
 
+    def take_upload(self, query):
+        """Stream one raw-body upload straight to disk. Never buffers the file."""
+        sid = query.get("sid", [""])[0]
+        key = query.get("key", [""])[0]
+        if key not in SOURCES:
+            raise ValueError(f"unknown source {key!r}")
+        sess = session(sid)
+        name = Path(unquote(query.get("name", ["upload"])[0])).name or "upload"
+
+        dest = sess["dir"] / "input" / f"{key}__{name}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        left = int(self.headers.get("Content-Length", 0))
+        with open(dest, "wb") as fh:
+            while left > 0:
+                chunk = self.rfile.read(min(1 << 20, left))
+                if not chunk:
+                    raise ValueError("upload ended early")
+                fh.write(chunk)
+                left -= len(chunk)
+
+        sess["files"][key] = dest
+        print(f"  uploaded {key}: {name} ({dest.stat().st_size / 1e6:.1f} MB)")
+        return {"key": key, "name": name, "bytes": dest.stat().st_size}
+
     def do_POST(self):
-        if self.path != "/run":
-            return self.send(404, json.dumps({"error": "not found"}))
+        url = urlparse(self.path)
         try:
-            n = int(self.headers.get("Content-Length", 0))
-            # ponytail: whole upload held in memory. Fine for a local test UI;
-            # switch to streamed multipart if the files stop fitting.
-            payload = json.loads(self.rfile.read(n) or b"{}")
-            self.send(200, json.dumps(do_run(payload)))
+            if url.path == "/upload":
+                self.send(200, json.dumps(self.take_upload(parse_qs(url.query))))
+            elif url.path == "/run":
+                n = int(self.headers.get("Content-Length", 0))
+                self.send(200, json.dumps(do_run(json.loads(self.rfile.read(n) or b"{}"))))
+            else:
+                self.send(404, json.dumps({"error": "not found"}))
         except Exception as exc:
             traceback.print_exc()
             self.send(400, json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
@@ -130,6 +170,7 @@ def main():
     a = ap.parse_args()
 
     RUNS.mkdir(exist_ok=True)
+    sys.stdout.reconfigure(line_buffering=True)  # so the log is readable while it runs
     url = f"http://127.0.0.1:{a.port}"
     print(f"phishing report test UI -> {url}   (ctrl-c to stop)")
     if not a.no_open:

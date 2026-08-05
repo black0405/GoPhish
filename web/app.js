@@ -11,7 +11,8 @@ const SOURCES = [
   ['gophish_de',       'GoPhish — German',     'German steps 2–4'],
 ];
 
-const files = {};           // key -> {name, data}
+let sid = crypto.randomUUID();
+const files = {};           // key -> filename, once the server has it on disk
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => {
   const n = document.createElement(tag);
@@ -19,6 +20,7 @@ const el = (tag, cls, html) => {
   if (html != null) n.innerHTML = html;
   return n;
 };
+const size = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const esc = (v) => String(v ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
 const FILE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
@@ -41,15 +43,24 @@ function buildDrops() {
     const input = card.querySelector('input');
     const shown = card.querySelector('.f');
 
+    // uploaded as a raw body the moment it is picked - the browser streams the
+    // File off disk, so a 500 MB export costs no page memory
     const take = async (file) => {
       if (!file) return;
-      const buf = await file.arrayBuffer();
-      let bin = '';
-      const bytes = new Uint8Array(buf);
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      files[key] = { name: file.name, data: btoa(bin) };
-      card.classList.add('filled');
-      shown.textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
+      card.classList.remove('filled');
+      shown.textContent = `uploading ${file.name} (${size(file.size)})…`;
+      try {
+        const q = `sid=${sid}&key=${key}&name=${encodeURIComponent(file.name)}`;
+        const r = await fetch(`/upload?${q}`, { method: 'POST', body: file });
+        const out = await r.json();
+        if (!r.ok) throw new Error(out.error || r.statusText);
+        files[key] = file.name;
+        card.classList.add('filled');
+        shown.textContent = `${file.name} · ${size(out.bytes)}`;
+      } catch (e) {
+        shown.textContent = `upload failed — ${e.message}`;
+        toast('warn', `${label}: ${e.message}`);
+      }
       $('run-btn').disabled = !files.base;
     };
 
@@ -113,7 +124,7 @@ $('run-btn').addEventListener('click', async () => {
   $('run-btn').disabled = true;
   placeholder('running…');
   try {
-    const r = await fetch('/run', { method: 'POST', body: JSON.stringify(files) });
+    const r = await fetch('/run', { method: 'POST', body: JSON.stringify({ sid }) });
     const res = await r.json();
     if (!r.ok) throw new Error(res.error || r.statusText);
     render(res);
@@ -129,6 +140,7 @@ $('run-btn').addEventListener('click', async () => {
 
 $('reset-btn').addEventListener('click', () => {
   for (const k of Object.keys(files)) delete files[k];
+  sid = crypto.randomUUID();          // new session -> new run folder
   buildDrops();
   $('run-btn').disabled = true;
   placeholder('drop the source files on the left, then run');
