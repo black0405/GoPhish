@@ -1,14 +1,10 @@
 'use strict';
 
+// step 1 only for now: the reporting lookups. The rest return as steps get built.
 const SOURCES = [
-  ['base',             'Userbase file',        'required'],
-  ['false_login',      'false_login_data',     'step 2.1 — Submitted Data'],
-  ['false_login_sso',  'false_login_sso_data', 'step 2.2 — Clicked Link'],
-  ['mimecast',         'Mimecast combined',    'step 2.3 — Log Type'],
-  ['gophish',          'GoPhish — non-German', 'step 3'],
-  ['o365',             'User Reported — O365', 'step 4.1'],
-  ['soc',              'User Reported — SOC',  'step 4.2'],
-  ['gophish_de',       'GoPhish — German',     'German steps 2–4'],
+  ['base', 'Userbase file',        'required'],
+  ['o365', 'User Reported — O365', 'XLOOKUP on Employee Email'],
+  ['soc',  'User Reported — SOC',  'XLOOKUP on Employee Email'],
 ];
 
 let sid = crypto.randomUUID();
@@ -134,10 +130,10 @@ function buildDrops() {
   }
 }
 
-function metrics(title, s) {
-  const yes = s.phished?.Yes || 0;
-  return `<div class="metric rows"><div class="lab">${esc(title)} rows</div><div class="val">${s.rows}</div></div>
-          <div class="metric added"><div class="lab">phished yes</div><div class="val">${yes}</div></div>`;
+function metrics(s) {
+  return `<div class="metric rows"><div class="lab">rows</div><div class="val">${s.rows}</div></div>
+          <div class="metric added"><div class="lab">reported yes</div><div class="val">${s.reported?.Yes || 0}</div></div>
+          <div class="metric removed"><div class="lab">reported no</div><div class="val">${s.reported?.No || 0}</div></div>`;
 }
 
 function chips(counts) {
@@ -154,25 +150,17 @@ function render(res) {
   const view = el('div', 'view');
   view.innerHTML = `
     <div class="st-head">
-      <h2 class="st-title"><small>${esc(res.run)}</small>Result</h2>
-      <div class="st-metrics">${metrics('final', res.final)}${metrics('german', res.german)}</div>
+      <h2 class="st-title"><small>${esc(res.run)}</small>Step 1 — result</h2>
+      <div class="st-metrics">${metrics(res.final)}</div>
     </div>
-    <div class="preview-head"><span class="lab">Final report — Outcome</span></div>
-    <div class="chips">${chips(res.final.outcome)}</div>
-    <div class="preview-head"><span class="lab">German report — Outcome</span></div>
-    <div class="chips">${chips(res.german.outcome)}</div>
-    <div class="preview-head">
-      <span class="lab">Preview — first 25 rows</span>
-      <div class="tabbar"><button class="tab on" data-p="preview">Final</button><button class="tab" data-p="preview_de">German</button></div>
-    </div>
+    <div class="preview-head"><span class="lab">Reported to O365</span></div>
+    <div class="chips">${chips(res.final.o365)}</div>
+    <div class="preview-head"><span class="lab">Reported to SOC</span></div>
+    <div class="chips">${chips(res.final.soc)}</div>
+    <div class="preview-head"><span class="lab">Preview — first 25 rows</span></div>
     <div class="preview" id="prev">${table(res.preview)}</div>
     <div class="logs">${res.log.map((l) => `<div class="logline"><span class="mk"></span>${esc(l)}</div>`).join('')}</div>
     <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>`;
-
-  view.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
-    view.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t === tab));
-    $('prev').innerHTML = table(res[tab.dataset.p]);
-  }));
 
   $('results').replaceChildren(view);
 }

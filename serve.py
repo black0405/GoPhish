@@ -55,16 +55,15 @@ def session(sid):
 
 def summarise(df):
     if not len(df):
-        return {"rows": 0, "outcome": {}, "phished": {}}
-    return {
-        "rows": int(len(df)),
-        "outcome": {(k or "(blank)"): int(v) for k, v in df[pr.COL_OUTCOME].value_counts().items()},
-        "phished": {str(k): int(v) for k, v in df[pr.COL_PHISHED].value_counts().items()},
-    }
+        return {"rows": 0, "outcome": {}, "phished": {}, "o365": {}, "soc": {}, "reported": {}}
+    vc = lambda col: {(k or "(blank)"): int(v) for k, v in df[col].value_counts().items()}
+    return {"rows": int(len(df)), "outcome": vc(pr.COL_OUTCOME), "phished": vc(pr.COL_PHISHED),
+            "o365": vc(pr.COL_O365), "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
 
 
 def preview(df, n=25):
-    cols = [c for c in PREVIEW_HEAD if c in df.columns] + pr.NEW_COLS
+    # step 1 columns only, while that is all the UI exposes
+    cols = [c for c in PREVIEW_HEAD if c in df.columns] + [pr.COL_O365, pr.COL_SOC, pr.COL_REPORTED]
     head = df.loc[:, cols].head(n).astype(object).where(df.loc[:, cols].head(n).notna(), "")
     return {"columns": cols, "rows": head.astype(str).values.tolist()}
 
