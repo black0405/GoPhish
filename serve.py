@@ -100,6 +100,20 @@ def do_run(payload):
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"   # keep-alive; send() always sets Content-Length
+
+    def drain(self):
+        """Discard whatever of the request body is still unread. Responding while
+        body bytes are in flight makes the OS reset the connection, and the
+        browser then reports a bare 'Failed to fetch' instead of our error."""
+        left = getattr(self, "_unread", 0)
+        while left > 0:
+            chunk = self.rfile.read(min(1 << 20, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+        self._unread = 0
+
     def send(self, code, body, ctype="application/json"):
         body = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
@@ -143,6 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("upload ended early")
                 fh.write(chunk)
                 left -= len(chunk)
+                self._unread = left
 
         sess["files"][key] = dest
         print(f"  uploaded {key}: {name} ({dest.stat().st_size / 1e6:.1f} MB)")
@@ -150,16 +165,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urlparse(self.path)
+        self._unread = int(self.headers.get("Content-Length", 0))
         try:
             if url.path == "/upload":
                 self.send(200, json.dumps(self.take_upload(parse_qs(url.query))))
             elif url.path == "/run":
-                n = int(self.headers.get("Content-Length", 0))
-                self.send(200, json.dumps(do_run(json.loads(self.rfile.read(n) or b"{}"))))
+                body = self.rfile.read(self._unread) if self._unread else b""
+                self._unread = 0
+                self.send(200, json.dumps(do_run(json.loads(body or b"{}"))))
             else:
+                self.drain()
                 self.send(404, json.dumps({"error": "not found"}))
         except Exception as exc:
             traceback.print_exc()
+            self.drain()   # finish reading the body or the browser sees a reset, not our error
             self.send(400, json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
 
     def log_message(self, fmt, *a):
