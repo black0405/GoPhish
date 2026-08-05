@@ -150,23 +150,35 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
             tabs[f"GoPhish {name}"] = frame
             base.loc[matched(frame, ["email"], email_only=True), COL_GOPHISH] = name
 
-    # --- step 4: reporting. The lookup is on Employee Email only, and a row that
-    # matches nobody is written as "Not Found" rather than left blank - blank means
-    # the source file was not supplied at all.
-    def lookup(src, col, cols, label):
-        hit = matched(src, cols, email_only=True)
-        base[col] = hit.map({True: col, False: NOT_FOUND})
-        log(f"    {int(hit.sum())} matched, {int((~hit).sum())} {NOT_FOUND.lower()}")
+    # --- step 4: reporting. Match on Employee Email; a hit copies the report
+    # file's own "reported" value onto the row (e.g. soc-support / o365), a miss
+    # writes "Not Found". Blank still means the source file was not supplied.
+    def col_of(df, names, idx):
+        byname = {str(c).strip().casefold(): c for c in df.columns}
+        for n in names:
+            if n.casefold() in byname:
+                return byname[n.casefold()]
+        return df.columns[idx] if idx < len(df.columns) else None
+
+    def lookup(src, col, key_names, key_idx, val_names, val_idx):
+        key, val = col_of(src, key_names, key_idx), col_of(src, val_names, val_idx)
+        vals = src[val].astype("string").str.strip() if val is not None else pd.Series("", index=src.index)
+        vals = vals.where(vals.notna() & vals.ne(""), col)   # matched but blank -> the column name
+        m = ident["Employee Email"].map(dict(zip(norm(src[key]), vals)))
+        base[col] = m.fillna(NOT_FOUND)
+        hits = int(m.notna().sum())
+        log(f"    matched {key} -> {val}: {hits} updated, {len(base) - hits} {NOT_FOUND.lower()}")
 
     step("4.1", "Reported to O365", o365 is not None)
     if o365 is not None:
-        lookup(o365, COL_O365, ["SenderAddress"], "O365")
+        lookup(o365, COL_O365, ["SenderAddress"], 2, ["Reported"], 10)
 
     step("4.2", "Reported to SOC", soc is not None)
     if soc is not None:
-        lookup(soc, COL_SOC, ["User"], "SOC")
+        lookup(soc, COL_SOC, ["User"], 2, ["reported"], 3)
 
-    base[COL_REPORTED] = (base[COL_O365].eq(COL_O365) | base[COL_SOC].eq(COL_SOC)).map({True: "Yes", False: "No"})
+    hit = lambda col: ~base[col].isin(["", NOT_FOUND])
+    base[COL_REPORTED] = (hit(COL_O365) | hit(COL_SOC)).map({True: "Yes", False: "No"})
 
     # --- step 5: reconcile. Rule 2 runs second, so a confirmed GoPhish click
     # beats the "they reported it" downgrade.
@@ -298,8 +310,10 @@ def fixtures():
         "email": ["click_wins@x.com", "userclick@x.com", "penguin@x.com", "droid@x.com"],
         "message": ["Clicked Link", "Email Sent", "Clicked Link", "Clicked Link"],
         "details": ["Windows", "Windows", "Linux", "Linux Android"]})
-    o365 = pd.DataFrame({"SenderAddress": ["reported_down@x.com", "click_wins@x.com"]})
-    soc = pd.DataFrame({"User": ["de_rule1@x.com"]})
+    # value columns as in the real exports: O365 column K "Reported", SOC column D "reported"
+    o365 = pd.DataFrame({"SenderAddress": ["reported_down@x.com", "click_wins@x.com"],
+                         "Reported": ["o365", "o365"]})
+    soc = pd.DataFrame({"User": ["de_rule1@x.com"], "reported": ["soc-support"]})
     gophish_de = pd.DataFrame({
         "email": ["de_rule1@x.com", "de_rule2@x.com", "de_plain@x.com"],
         "message": ["Clicked Link", "Submitted Data", "Email Sent"],
@@ -339,12 +353,12 @@ def selftest():
     assert f.loc["reported_down", COL_REPORTED] == "Yes"
     assert f.loc["userclick", COL_REPORTED] == "No"
     assert f.loc["userclick", COL_GOPHISH] == "Email Sent"
-    assert f.loc["click_wins", COL_O365] == COL_O365
-    assert f.loc["de_rule1", COL_SOC] == COL_SOC
-    # every row the lookup missed says so, in both columns
+    # a hit carries the report file's own value; a miss says Not Found
+    assert f.loc["click_wins", COL_O365] == "o365", f.loc["click_wins", COL_O365]
+    assert f.loc["de_rule1", COL_SOC] == "soc-support", f.loc["de_rule1", COL_SOC]
     assert f.loc["untouched", COL_O365] == NOT_FOUND and f.loc["untouched", COL_SOC] == NOT_FOUND
     assert f.loc["click_wins", COL_SOC] == NOT_FOUND
-    assert set(f[COL_O365]) == {COL_O365, NOT_FOUND}, set(f[COL_O365])
+    assert set(f[COL_O365]) == {"o365", NOT_FOUND}, set(f[COL_O365])
 
     # 3.1: Linux dropped, Linux+Android kept.
     kept = set(tabs["GoPhish Clicked Link"]["email"])

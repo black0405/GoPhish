@@ -3,8 +3,8 @@
 // step 1 only for now: the reporting lookups. The rest return as steps get built.
 const SOURCES = [
   ['base', 'Userbase file',        'required'],
-  ['o365', 'User Reported — O365', 'XLOOKUP on Employee Email'],
-  ['soc',  'User Reported — SOC',  'XLOOKUP on Employee Email'],
+  ['o365', 'User Reported — O365', 'SenderAddress (C) → Reported (K)'],
+  ['soc',  'User Reported — SOC',  'User (C) → reported (D)'],
 ];
 
 let sid = crypto.randomUUID();
@@ -168,13 +168,18 @@ function render(res) {
 /* ---- run log dock ---- */
 function fillLog(res) {
   const s = res.final;
-  const updated = (c, hit) => `${esc(c)}: ${hit} updated, ${s[c === 'Reported to O365' ? 'o365' : 'soc']['Not Found'] || 0} Not Found`;
+  const summarise = (name, m) => {
+    const hits = Object.entries(m).filter(([k]) => k !== 'Not Found' && k !== '(blank)');
+    const upd = hits.reduce((a, [, v]) => a + v, 0);
+    const detail = hits.map(([k, v]) => `${k} ${v}`).join(', ') || 'none';
+    return `${name}: ${upd} updated (${detail}), ${m['Not Found'] || 0} Not Found`;
+  };
   const lines = [
     `run ${res.run} — ${s.rows} rows`,
     '',
     '── columns written ──',
-    updated('Reported to O365', s.o365['Reported to O365'] || 0),
-    updated('Reported to SOC', s.soc['Reported to SOC'] || 0),
+    summarise('Reported to O365', s.o365),
+    summarise('Reported to SOC', s.soc),
     `Reported (Yes/No): Yes ${s.reported.Yes || 0}, No ${s.reported.No || 0}`,
     '',
     '── pipeline ──',
@@ -191,14 +196,39 @@ function placeholder(msg) {
   $('results').replaceChildren(el('div', 'view', `<div class="preview"><div class="empty">${esc(msg)}</div></div>`));
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// /run only starts the job; we poll /status until it lands. No request stays
+// open longer than a poll, so a slow run can never hit the browser's idle kill.
+async function awaitRun() {
+  const t0 = Date.now();
+  let misses = 0;
+  for (;;) {
+    await sleep(1500);
+    let st;
+    try {
+      st = await (await fetch(`/status?sid=${sid}`, { cache: 'no-store' })).json();
+      misses = 0;
+    } catch {
+      if (++misses >= 4) throw new Error('lost the server — is serve.py still running?');
+      continue;
+    }
+    if (st.state === 'done') return st.result;
+    if (st.state === 'error') throw new Error(st.error);
+    if (st.state === 'unknown') throw new Error('server restarted mid-run — hit Run again');
+    placeholder(`processing… ${Math.round((Date.now() - t0) / 1000)}s`);
+  }
+}
+
 $('run-btn').addEventListener('click', async () => {
   $('busybar').classList.add('on');
   $('run-btn').disabled = true;
-  placeholder('running…');
+  placeholder('starting…');
   try {
     const r = await fetch('/run', { method: 'POST', body: JSON.stringify({ sid }) });
-    const res = await r.json();
-    if (!r.ok) throw new Error(res.error || r.statusText);
+    const out = await r.json();
+    if (!r.ok) throw new Error(out.error || r.statusText);
+    const res = await awaitRun();
     render(res);
     fillLog(res);
     toast('good', `${res.final.rows} rows · ${res.german.rows} German`);

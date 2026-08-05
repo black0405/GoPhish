@@ -16,6 +16,7 @@ import json
 import mimetypes
 import re
 import sys
+import threading
 import time
 import traceback
 import webbrowser
@@ -39,6 +40,27 @@ PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
 XLSX_MAX_ROWS = 100_000   # above this, deliverables are csv-only (xlsx write is minutes)
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
 SESSIONS = {}  # sid -> {"dir": Path, "files": {key: Path}}
+JOBS = {}      # sid -> {"state": running|done|error, "result"|"error": ...}
+
+
+def start_run(payload):
+    """Run in a worker thread. Browsers kill an idle request after ~5 min, so a
+    big run must never hold the /run connection open - the page polls /status."""
+    sid = payload.get("sid")
+    session(sid)   # validates the sid
+    if JOBS.get(sid, {}).get("state") == "running":
+        return {"state": "running"}
+    JOBS[sid] = {"state": "running"}
+
+    def work():
+        try:
+            JOBS[sid] = {"state": "done", "result": do_run(payload)}
+        except Exception as exc:
+            traceback.print_exc()
+            JOBS[sid] = {"state": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"state": "running"}
 
 
 def session(sid):
@@ -133,9 +155,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        url = urlparse(self.path)
+        path = url.path
         if path == "/health":
             return self.send(200, json.dumps({"ok": True}))
+        if path == "/status":
+            sid = parse_qs(url.query).get("sid", [""])[0]
+            return self.send(200, json.dumps(JOBS.get(sid, {"state": "unknown"})))
         if path.startswith("/runs/"):
             target = (RUNS / path[len("/runs/"):]).resolve()
             if RUNS.resolve() not in target.parents or not target.is_file():
@@ -181,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/run":
                 body = self.rfile.read(self._unread) if self._unread else b""
                 self._unread = 0
-                self.send(200, json.dumps(do_run(json.loads(body or b"{}"))))
+                self.send(200, json.dumps(start_run(json.loads(body or b"{}"))))
             else:
                 self.drain()
                 self.send(404, json.dumps({"error": "not found"}))
