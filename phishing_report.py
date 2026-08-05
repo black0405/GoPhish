@@ -148,8 +148,11 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
 
     tabs = {}
 
-    # --- Part 1, step 2: outcomes. Applied weakest first so the strongest
-    # evidence for a user is the value left standing.
+    # --- Part 1, step 2: outcomes, in the SOP's order. Each check overwrites the
+    # one before it, so a user in both false-login files ends on Clicked Link.
+    # Mimecast runs first, ahead of its 2.3 number: it carries a row for every
+    # recipient, so running it last would wipe every Submitted Data and Clicked
+    # Link the two checks above just established.
     step("2.3", "Mimecast activity", mimecast is not None)
     if mimecast is not None:
         mm = mimecast.copy()
@@ -160,13 +163,13 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
         v = ident["Employee Email"].map(dict(zip(mm["_k"], mm["_v"])))
         base.loc[v.notna(), COL_OUTCOME] = v[v.notna()]
 
-    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
-    if false_login_sso is not None:
-        base.loc[matched(false_login_sso, FALSE_LOGIN_SSO_COLS), COL_OUTCOME] = "Clicked Link"
-
     step("2.1", "Submitted Data (false_login)", false_login is not None)
     if false_login is not None:
         base.loc[matched(false_login, FALSE_LOGIN_COLS), COL_OUTCOME] = "Submitted Data"
+
+    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
+    if false_login_sso is not None:
+        base.loc[matched(false_login_sso, FALSE_LOGIN_SSO_COLS), COL_OUTCOME] = "Clicked Link"
 
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
@@ -425,6 +428,13 @@ def check_outcome_pairs():
         src = pd.DataFrame({"Some Other Column": ["hit@x.com"], **{c: ["other@x.com"] for c in cols}})
         final, _, _ = run(base, log=lambda *_: None, **{kw: src})
         assert list(final[COL_OUTCOME]) == [NOT_FOUND], f"{kw} matched an unlisted column"
+
+    # 2.1 runs before 2.2, so a user in both files ends on 2.2's value
+    base = pd.DataFrame({"Employee Email": ["both@x.com"]})
+    final, _, _ = run(base, log=lambda *_: None,
+                      false_login=pd.DataFrame({"Username": ["both@x.com"]}),
+                      false_login_sso=pd.DataFrame({"Email": ["both@x.com"]}))
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_lookup_fallback():
