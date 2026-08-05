@@ -183,7 +183,22 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
         key, val = col_of(src, key_names, key_idx), col_of(src, val_names, val_idx)
         vals = src[val].astype("string").str.strip() if val is not None else pd.Series("", index=src.index)
         vals = vals.where(vals.notna() & vals.ne(""), col)   # matched but blank -> the column name
-        m = ident["Employee Email"].map(dict(zip(norm(src[key]), vals)))
+        against = lambda c: ident["Employee Email"].map(dict(zip(norm(src[c]), vals)))
+
+        m = against(key)
+        if not m.notna().any():
+            # The named column holds nobody from the userbase. A reported mail
+            # lists the phisher as the sender and our employee as the recipient,
+            # so the identity is often one column over - use whichever column
+            # actually names our people rather than writing Not Found everywhere.
+            emails = set(ident["Employee Email"].dropna())
+            other = {c: int(norm(src[c]).isin(emails).sum()) for c in src.columns if c != key}
+            best = max(other, key=other.get, default=None)
+            if best is not None and other[best]:
+                log(f"    ! {key} matches nobody in the userbase - using {best} instead"
+                    f" ({other[best]} of {len(src)} rows match)")
+                key, m = best, against(best)
+
         base[col] = m.fillna(NOT_FOUND)
         hits = int(m.notna().sum())
         log(f"    matched {key} -> {val}: {hits} updated, {len(base) - hits} {NOT_FOUND.lower()}")
@@ -373,8 +388,24 @@ def check_read_any():
         assert list(read_any(p).columns) == ["a", "b"]
 
 
+def check_lookup_fallback():
+    """A real O365 export names the phisher in SenderAddress and our employee in
+    RecipientAddress - matching the named column alone would report nobody."""
+    base = pd.DataFrame({"Employee Name": ["a", "b"], "Employee Email": ["a@x.com", "b@x.com"]})
+    o365 = pd.DataFrame({"MessageId": ["1", "2"],
+                         "SenderAddress": ["phisher@evil.com", "phisher@evil.com"],
+                         "RecipientAddress": ["a@x.com", "nobody@x.com"],
+                         "Reported": ["o365", "o365"]})
+    said = []
+    final, _, _ = run(base, o365=o365, log=said.append)
+    assert list(final[COL_O365]) == ["o365", NOT_FOUND], list(final[COL_O365])
+    assert list(final[COL_REPORTED]) == ["Yes", "No"], list(final[COL_REPORTED])
+    assert any("using RecipientAddress" in s for s in said), said
+
+
 def selftest():
     check_read_any()
+    check_lookup_fallback()
     final, ger, tabs = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
     g = ger.set_index("Employee Name")

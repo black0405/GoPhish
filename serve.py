@@ -134,35 +134,29 @@ def do_run(payload, logs=None):
             done(f"read {name}: {len(frames[key])} rows")
 
     done = stage("running the lookups")
-    final, ger, tabs = pr.run(log=logs.append, **frames)
+    final, _ger, _tabs = pr.run(log=logs.append, **frames)
     done("lookups done")
 
-    files = []
-    def emit(stem, sheets):
-        rows = sum(len(f) for f in sheets.values())
-        if len(sheets) == 1:   # single-sheet deliverables also ship as csv
-            done = stage(f"writing {stem}.csv ({rows} rows)")
-            next(iter(sheets.values())).to_csv(run / f"{stem}.csv", index=False)
-            files.append({"name": f"{stem}.csv", "url": f"/runs/{run.name}/{stem}.csv"})
-            done(f"wrote {stem}.csv")
-        # xlsx is ~60x slower to write than csv; above the cap it is skipped and logged
-        if rows <= XLSX_MAX_ROWS:
-            done = stage(f"writing {stem}.xlsx ({rows} rows)")
-            pr.write_xlsx(run / f"{stem}.xlsx", sheets)
-            files.append({"name": f"{stem}.xlsx", "url": f"/runs/{run.name}/{stem}.xlsx"})
-            done(f"wrote {stem}.xlsx")
-        else:
-            logs.append(f"{stem}.xlsx skipped ({rows} rows > {XLSX_MAX_ROWS}) - use the csv")
-
-    emit("Final_Report", {"Final Report": final})
-    emit("German_Report", {"German Report": ger})
-    if tabs:
-        emit("GoPhish_Tabs", tabs)
+    # One deliverable for step 1: the userbase plus the three columns this step
+    # fills. The other new columns belong to steps this UI does not run yet and
+    # would ship as empty, and the German split is part 2.
+    out = final.drop(columns=[pr.COL_OUTCOME, pr.COL_GOPHISH, pr.COL_PHISHED])
+    rows = len(out)
+    stem = "Step1_Report"
+    if rows <= XLSX_MAX_ROWS:
+        done = stage(f"writing {stem}.xlsx ({rows} rows)")
+        pr.write_xlsx(run / f"{stem}.xlsx", {"Step 1": out})
+        name = f"{stem}.xlsx"
+    else:   # openpyxl writes ~1000 rows/s, so past the cap the one file is csv
+        done = stage(f"writing {stem}.csv ({rows} rows, too many for xlsx)")
+        out.to_csv(run / f"{stem}.csv", index=False)
+        name = f"{stem}.csv"
+    done(f"wrote {name}")
     logs.append(f"total {time.perf_counter() - started:.1f}s")
 
-    return {"run": run.name, "log": logs, "files": files,
-            "final": summarise(final), "german": summarise(ger),
-            "preview": preview(final), "preview_de": preview(ger)}
+    return {"run": run.name, "log": logs,
+            "files": [{"name": name, "url": f"/runs/{run.name}/{name}"}],
+            "final": summarise(final), "preview": preview(final)}
 
 
 class Handler(BaseHTTPRequestHandler):

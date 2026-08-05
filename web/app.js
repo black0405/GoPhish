@@ -248,7 +248,7 @@ $('run-btn').addEventListener('click', async () => {
     const res = await awaitRun();
     render(res);
     fillLog(res);
-    toast('good', `${res.final.rows} rows · ${res.german.rows} German`);
+    toast('good', `${res.final.rows} rows · ${res.files[0]?.name || 'no file'}`);
   } catch (e) {
     const msg = e.message === 'Failed to fetch' ? 'lost the server — is serve.py still running?' : e.message;
     placeholder(msg);
