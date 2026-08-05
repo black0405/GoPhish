@@ -37,7 +37,7 @@ SOURCES = ["base", "false_login", "false_login_sso", "mimecast",
            "gophish", "o365", "soc", "gophish_de"]
 PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
 
-XLSX_MAX_ROWS = 100_000   # above this, deliverables are csv-only (xlsx write is minutes)
+XLSX_MAX_ROWS = 100_000   # csv-only above this: openpyxl writes 200k rows in 118s, 100k in ~60s
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
 SESSIONS = {}  # sid -> {"dir": Path, "files": {key: Path}}
 JOBS = {}      # sid -> {"state": running|done|error, "result"|"error": ...}
@@ -98,25 +98,38 @@ def do_run(payload):
     if "base" not in uploaded:
         raise ValueError("The Userbase file is required")
 
-    logs = []
+    # every stage is timed: on a slow run the log has to name the stage that ate
+    # the time, or the only report back is "it took half an hour"
+    started = time.perf_counter()
+    def took(t):
+        return f"{time.perf_counter() - t:.1f}s"
+
+    logs = [pr.XL_NOTE]
     frames = {}
     for key in SOURCES:
         if key in uploaded:
+            t = time.perf_counter()
             frames[key] = pr.read_any(uploaded[key], NEED.get(key))
-            logs.append(f"read {uploaded[key].name}: {len(frames[key])} rows")
+            logs.append(f"read {uploaded[key].name}: {len(frames[key])} rows ({took(t)})")
 
+    t = time.perf_counter()
     final, ger, tabs = pr.run(log=logs.append, **frames)
+    logs.append(f"  lookups done ({took(t)})")
 
     files = []
     def emit(stem, sheets):
         rows = sum(len(f) for f in sheets.values())
         if len(sheets) == 1:   # single-sheet deliverables also ship as csv
+            t = time.perf_counter()
             next(iter(sheets.values())).to_csv(run / f"{stem}.csv", index=False)
             files.append({"name": f"{stem}.csv", "url": f"/runs/{run.name}/{stem}.csv"})
+            logs.append(f"wrote {stem}.csv ({took(t)})")
         # xlsx is ~60x slower to write than csv; above the cap it is skipped and logged
         if rows <= XLSX_MAX_ROWS:
+            t = time.perf_counter()
             pr.write_xlsx(run / f"{stem}.xlsx", sheets)
             files.append({"name": f"{stem}.xlsx", "url": f"/runs/{run.name}/{stem}.xlsx"})
+            logs.append(f"wrote {stem}.xlsx ({took(t)})")
         else:
             logs.append(f"{stem}.xlsx skipped ({rows} rows > {XLSX_MAX_ROWS}) - use the csv")
 
@@ -124,6 +137,7 @@ def do_run(payload):
     emit("German_Report", {"German Report": ger})
     if tabs:
         emit("GoPhish_Tabs", tabs)
+    logs.append(f"total {took(started)}")
 
     return {"run": run.name, "log": logs, "files": files,
             "final": summarise(final), "german": summarise(ger),
@@ -230,6 +244,7 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)  # so the log is readable while it runs
     url = f"http://127.0.0.1:{a.port}"
     print(f"phishing report test UI -> {url}   (ctrl-c to stop)")
+    print(pr.XL_NOTE)
     if not a.no_open:
         webbrowser.open(url)
     ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()

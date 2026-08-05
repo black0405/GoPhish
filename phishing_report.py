@@ -24,11 +24,14 @@ from pathlib import Path
 
 import pandas as pd
 
-try:  # rust xlsx reader, ~5x openpyxl on a 200k-row file; falls back silently
+try:  # rust xlsx reader: 14s where openpyxl takes 289s on a 36 MB / 200k-row file
     import python_calamine  # noqa: F401
     _XL = {"engine": "calamine"}
-except ImportError:
+    XL_NOTE = "xlsx reads: calamine"
+except ImportError:  # still works, just ~20x slower - say so instead of failing silently
     _XL = {}
+    XL_NOTE = ("! python_calamine is not installed - xlsx reads fall back to openpyxl, "
+               "~20x slower (a 100 MB userbase takes minutes). Fix: pip install python-calamine")
 
 COL_OUTCOME = "Outcome"
 COL_GOPHISH = "GoPhish"
@@ -61,17 +64,33 @@ def keys(df, cols):
     return out
 
 
+def dedup(names):
+    """pandas-style unique column names: blanks become Unnamed, repeats get .1, .2."""
+    out, seen = [], {}
+    for i, n in enumerate(names):
+        n = n or f"Unnamed: {i}"
+        seen[n] = seen.get(n, -1) + 1
+        out.append(n if not seen[n] else f"{n}.{seen[n]}")
+    return out
+
+
 def read_any(path, need=None):
-    """Read csv/xlsx as text. If `need` is missing, look for it in the first rows."""
+    """Read csv/xlsx as text in ONE pass, whatever row the header sits on.
+
+    Exports often carry banner rows above the header. Re-reading the file to
+    find it costs a whole extra parse per attempt - minutes on a 100 MB xlsx -
+    so the file is parsed headerless once and the header row is picked out of
+    the rows already in memory."""
     p = Path(path)
     csv = p.suffix.lower() in (".csv", ".txt")
-    rd = (lambda **k: pd.read_csv(p, dtype=str, **k)) if csv else (lambda **k: pd.read_excel(p, dtype=str, **_XL, **k))
-    df = rd()
-    if need and need not in df.columns:
-        probe = rd(header=None, nrows=15)
-        for i in range(len(probe)):
-            if need in [str(v).strip() for v in probe.iloc[i]]:
-                return rd(header=i)
+    raw = (pd.read_csv(p, dtype=str, header=None) if csv
+           else pd.read_excel(p, dtype=str, header=None, **_XL))
+    if not len(raw):
+        return raw
+    row = lambda i: ["" if pd.isna(v) else str(v).strip() for v in raw.iloc[i]]
+    i = next((j for j in range(min(15, len(raw))) if need in row(j)), 0) if need else 0
+    df = raw.iloc[i + 1:].reset_index(drop=True)
+    df.columns = dedup(row(i))
     return df
 
 
@@ -254,6 +273,7 @@ def main(argv=None):
     if not a.base:
         ap.error("--base is required")
 
+    print(XL_NOTE)
     src = dict(
         base=read_any(a.base, "Employee Email"),
         false_login=read_any(a.false_login) if a.false_login else None,
@@ -333,7 +353,28 @@ def write_samples(out):
     return 0
 
 
+def check_read_any():
+    """A banner row above the header, a blank header cell and a repeated one."""
+    import tempfile
+    grid = pd.DataFrame([["User Reported SOC-Support Q2", None, None, None],
+                         ["Time", "User", None, "User"],
+                         ["09:00", "a@x.com", "x", "b@x.com"]])
+    with tempfile.TemporaryDirectory() as d:
+        for name in ("probe.xlsx", "probe.csv"):
+            p = Path(d) / name
+            grid.to_csv(p, index=False, header=False) if name.endswith(".csv") else \
+                write_xlsx(p, {"s": grid})
+            df = read_any(p, "User")
+            assert list(df.columns) == ["Time", "User", "Unnamed: 2", "User.1"], (name, list(df.columns))
+            assert len(df) == 1 and df.iloc[0]["User"] == "a@x.com", (name, df.to_dict())
+        # no `need` given -> row 0 is the header, as before
+        p = Path(d) / "plain.csv"
+        pd.DataFrame({"a": [1], "b": [2]}).to_csv(p, index=False)
+        assert list(read_any(p).columns) == ["a", "b"]
+
+
 def selftest():
+    check_read_any()
     final, ger, tabs = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
     g = ger.set_index("Employee Name")
