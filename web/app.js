@@ -8,6 +8,7 @@ const SOURCES = [
   ['false_login', 'False login — Submitted', 'Username / Email (SSO) → Submitted Data'],
   ['false_login_sso', 'False login SSO — Clicked', 'Email → Clicked Link'],
   ['mimecast', 'Mimecast activity', 'To (C) → Log Type (O)'],
+  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), Linux excluded'],
 ];
 
 let sid = crypto.randomUUID();
@@ -152,6 +153,8 @@ function render(res) {
     </div>
     <div class="preview-head"><span class="lab">Outcome</span></div>
     <div class="chips">${chips(res.final.outcome)}</div>
+    <div class="preview-head"><span class="lab">GoPhish</span></div>
+    <div class="chips">${chips(res.final.gophish)}</div>
     <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>`;
   // the pipeline log lives in the dock below, which already streamed it live
 
@@ -186,6 +189,7 @@ function fillLog(res) {
     '',
     '── columns written ──',
     summarise('Outcome', s.outcome),
+    summarise('GoPhish', s.gophish),
     summarise('Reported to O365', s.o365),
     summarise('Reported to SOC', s.soc),
     `Reported (Yes/No): Yes ${s.reported.Yes || 0}, No ${s.reported.No || 0}`,

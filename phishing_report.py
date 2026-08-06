@@ -8,10 +8,11 @@ The steps built so far, over the whole Userbase file:
     2.1  Submitted Data    false_login,     Username / Email (SSO)
     2.2  Clicked Link      false_login_sso, Email
     3    Mimecast          To (C) -> Log Type (O)
+    4    GoPhish           email (B) -> message (D), Linux rows excluded first
 
-Steps 2 and 3 share one Outcome column and each only fills rows no earlier check
-resolved. GoPhish, the reconcile pass and the German part are not built yet -
-see git history for the earlier drafts.
+Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
+check only fills rows no earlier one resolved. The reconcile pass and the German
+part are not built yet - see git history for the earlier drafts.
 
     python phishing_report.py --base UserBase_V2.xlsx \
         --false-login "False_login_data-Q2-Submitted.xlsx" \
@@ -19,6 +20,7 @@ see git history for the earlier drafts.
         --mimecast mimecast_combine.xlsx \
         --o365 "User Reported-Microsoft 365Report button.xlsx" \
         --soc "User Reported SOC-Support.xlsx" \
+        --gophish GoPhish_Events_non_german.xlsx \
         --out output
 
 Any source may be omitted; its step is skipped and reported as skipped.
@@ -55,6 +57,8 @@ FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicke
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
+GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]  # step 4, applied in this order
+SHEET_EXCLUDED = "excluded linux"
 
 
 def norm(s):
@@ -109,9 +113,11 @@ def phished(outcome):
 
 
 def run(base, false_login=None, false_login_sso=None, mimecast=None,
-        o365=None, soc=None, log=print):
-    """Returns the report frame: the userbase with NEW_COLS filled in."""
+        o365=None, soc=None, gophish=None, log=print):
+    """Returns (report frame, {sheet name: frame}) - the report is the userbase
+    with NEW_COLS filled in, the sheets are step 4's split of the GoPhish file."""
     base = base.copy()
+    sheets = {}
     for c in NEW_COLS:
         base[c] = ""
 
@@ -220,8 +226,40 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     if any(f is not None for f in (mimecast, false_login_sso, false_login)):
         base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
 
+    # --- step 4: GoPhish. The events file is split into sheets first - the Linux
+    # (non-Android) rows are moved out entirely, then one sheet per event - and
+    # the GoPhish column is filled from those sheets in GOPHISH_EVENTS order,
+    # each pass only filling rows the pass before it left unresolved.
+    step("4", "GoPhish activity", gophish is not None)
+    if gophish is not None:
+        em = col_of(gophish, ["email"], 1)
+        msg = col_of(gophish, ["message"], 3)
+        det = col_of(gophish, ["details"], 5)
+
+        d = gophish[det].astype(str) if det is not None else pd.Series("", index=gophish.index)
+        linux = d.str.contains("linux", case=False, na=False) & ~d.str.contains("android", case=False, na=False)
+        sheets[SHEET_EXCLUDED] = gophish[linux].copy()
+        kept = gophish[~linux]
+        log(f"    {det} contains linux, not android: {int(linux.sum())} rows moved to "
+            f"'{SHEET_EXCLUDED}', {len(kept)} rows left")
+
+        message = kept[msg].astype("string").str.strip()
+        for event in GOPHISH_EVENTS:
+            frame = kept[message.str.casefold() == event.casefold()]
+            sheets[event.lower()] = frame.copy()
+            # carry the sheet's own message value, the same as the reporting lookups
+            hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
+            unresolved = base[COL_GOPHISH].eq("")
+            base.loc[hit.notna() & unresolved, COL_GOPHISH] = hit[hit.notna() & unresolved]
+            log(f"    '{event.lower()}' sheet: {len(frame)} rows, Employee Email <- {em}: "
+                f"{int(hit.notna().sum())} matched")
+            log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
+                f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier sheet")
+
+        base.loc[base[COL_GOPHISH].eq(""), COL_GOPHISH] = NOT_FOUND
+
     base[COL_PHISHED] = phished(base[COL_OUTCOME])
-    return base
+    return base, sheets
 
 
 def write_xlsx(path, sheets):
@@ -247,6 +285,7 @@ def main(argv=None):
     ap.add_argument("--mimecast")
     ap.add_argument("--o365")
     ap.add_argument("--soc")
+    ap.add_argument("--gophish", help="non-German GoPhish events")
     ap.add_argument("--out", default="output")
     ap.add_argument("--no-xlsx", action="store_true", help="CSV only - much faster on big files")
     ap.add_argument("--selftest", action="store_true")
@@ -268,9 +307,10 @@ def main(argv=None):
         mimecast=read_any(a.mimecast, "To") if a.mimecast else None,
         o365=read_any(a.o365, "SenderAddress") if a.o365 else None,
         soc=read_any(a.soc, "User") if a.soc else None,
+        gophish=read_any(a.gophish, "email") if a.gophish else None,
     )
     print(f"base file: {len(src['base'])} rows")
-    final = run(**src)
+    final, sheets = run(**src)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -278,7 +318,7 @@ def main(argv=None):
     # and the slow one can be turned off while iterating on the rules
     final.to_csv(out / "Final_Report.csv", index=False)
     if not a.no_xlsx:
-        write_xlsx(out / "Final_Report.xlsx", {"Final Report": final})
+        write_xlsx(out / "Final_Report.xlsx", {"Final Report": final, **sheets})
 
     ext = "csv" if a.no_xlsx else "csv + xlsx"
     print(f"\nFinal_Report ({ext})  {len(final)} rows\n{counts(final)}")
@@ -310,9 +350,18 @@ def fixtures():
     # value columns as in the real exports: O365 column K "Reported", SOC column D "reported"
     o365 = pd.DataFrame({"SenderAddress": ["reported@x.com"], "Reported": ["o365"]})
     soc = pd.DataFrame({"User": ["reported@x.com"], "reported": ["soc-support"]})
+    # "clicked" is in both event sheets and must take the Clicked Link pass;
+    # "penguin" is Linux without Android and must be excluded before any mapping
+    gophish = pd.DataFrame({
+        "campaign_id": ["1"] * 5,
+        "email": ["clicked@x.com", "clicked@x.com", "opened@x.com", "escalated@x.com", "untouched@x.com"],
+        "time": ["09:00"] * 5,
+        "message": ["Clicked Link", "Email Sent", "Email Sent", "Clicked Link", "Clicked Link"],
+        "Sort": [""] * 5,
+        "details": ["Windows", "Windows", "Linux Android", "Windows", "Linux x86_64"]})
 
     return dict(base=base, false_login=false_login, false_login_sso=false_login_sso,
-                mimecast=mimecast, o365=o365, soc=soc)
+                mimecast=mimecast, o365=o365, soc=soc, gophish=gophish)
 
 
 def write_samples(out):
@@ -358,7 +407,7 @@ def check_outcome_pairs():
                                      "SSOUPN as per AD (O365)": ["hit@ad.x.com", "miss@ad.x.com"]})
                 src = pd.DataFrame({c: [base.loc[0, bcol].upper() if c == scol else "other@x.com"]
                                     for c in cols})
-                final = run(base, log=lambda *_: None, **{kw: src})
+                final, _ = run(base, log=lambda *_: None, **{kw: src})
                 where = f"{kw}: {bcol} <- {scol}"
                 assert list(final[COL_OUTCOME]) == [outcome, NOT_FOUND], f"{where}: {list(final[COL_OUTCOME])}"
                 assert list(final[COL_PHISHED]) == [phished, "No"], f"{where}: {list(final[COL_PHISHED])}"
@@ -366,13 +415,13 @@ def check_outcome_pairs():
         # the same identity in a column the table does not list must not match
         base = pd.DataFrame({"Employee Email": ["hit@x.com"]})
         src = pd.DataFrame({"Some Other Column": ["hit@x.com"], **{c: ["other@x.com"] for c in cols}})
-        final = run(base, log=lambda *_: None, **{kw: src})
+        final, _ = run(base, log=lambda *_: None, **{kw: src})
         assert list(final[COL_OUTCOME]) == [NOT_FOUND], f"{kw} matched an unlisted column"
 
     # each check only fills what is still unresolved, so the earliest one that
     # matches a user wins - 2.1 over 2.2, and both over Mimecast
     base = pd.DataFrame({"Employee Email": ["both@x.com", "clicked@x.com"]})
-    both = lambda **kw: run(base, log=lambda *_: None, **kw)[COL_OUTCOME].tolist()
+    both = lambda **kw: run(base, log=lambda *_: None, **kw)[0][COL_OUTCOME].tolist()
     fl = pd.DataFrame({"Username": ["both@x.com"]})
     sso = pd.DataFrame({"Email": ["both@x.com", "clicked@x.com"]})
     mm = pd.DataFrame({"To": ["both@x.com", "clicked@x.com"], "Log Type": ["Email Sent", "Email Sent"]})
@@ -390,7 +439,7 @@ def check_lookup_fallback():
                          "RecipientAddress": ["a@x.com", "nobody@x.com"],
                          "Reported": ["o365", "o365"]})
     said = []
-    final = run(base, o365=o365, log=said.append)
+    final, _ = run(base, o365=o365, log=said.append)
     assert list(final[COL_O365]) == ["o365", NOT_FOUND], list(final[COL_O365])
     assert list(final[COL_REPORTED]) == ["Yes", "No"], list(final[COL_REPORTED])
     assert any("using RecipientAddress" in s for s in said), said
@@ -401,7 +450,7 @@ def check_mimecast_columns():
     base = pd.DataFrame({"Employee Email": ["a@x.com"]})
     wide = {chr(65 + i): [""] for i in range(15)}       # 15 columns, A..O
     wide["C"], wide["O"] = ["A@X.COM"], ["User Click"]  # position 2 and 14
-    final = run(base, mimecast=pd.DataFrame(wide), log=lambda *_: None)
+    final, _ = run(base, mimecast=pd.DataFrame(wide), log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["User Click"], list(final[COL_OUTCOME])
 
 
@@ -410,7 +459,8 @@ def selftest():
     check_outcome_pairs()
     check_lookup_fallback()
     check_mimecast_columns()
-    f = run(log=lambda *_: None, **fixtures()).set_index("Employee Name")
+    final, sheets = run(log=lambda *_: None, **fixtures())
+    f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
@@ -430,7 +480,20 @@ def selftest():
     assert f.loc["reported", COL_SOC] == "soc-support", f.loc["reported", COL_SOC]
     assert f.loc["untouched", COL_O365] == NOT_FOUND and f.loc["untouched", COL_SOC] == NOT_FOUND
     assert set(f[COL_O365]) == {"o365", NOT_FOUND}, set(f[COL_O365])
-    assert set(f[COL_GOPHISH]) == {""}, "GoPhish is not built yet - it must stay empty"
+
+    # step 4: the Linux (non-Android) row is moved out and never mapped, the
+    # Clicked Link pass runs before Email Sent, the rest say Not Found
+    assert list(sheets) == [SHEET_EXCLUDED, "clicked link", "email sent"], list(sheets)
+    assert list(sheets[SHEET_EXCLUDED]["email"]) == ["untouched@x.com"], sheets[SHEET_EXCLUDED]
+    assert list(sheets["clicked link"]["email"]) == ["clicked@x.com", "escalated@x.com"]
+    assert list(sheets["email sent"]["email"]) == ["clicked@x.com", "opened@x.com"]
+    want_gp = {"clicked": "Clicked Link",     # in both sheets, Clicked Link runs first
+               "escalated": "Clicked Link",
+               "opened": "Email Sent",
+               "untouched": NOT_FOUND,        # its only row was excluded as Linux
+               "submitted": NOT_FOUND, "reported": NOT_FOUND}
+    for name, value in want_gp.items():
+        assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
 
     print("selftest: all checks pass")
     return 0

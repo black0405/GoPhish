@@ -31,9 +31,9 @@ WEB = ROOT / "web"
 RUNS = ROOT / "runs"
 
 # key -> the column read_any looks for when the export has banner rows above the header
-NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress",
-        "soc": "User", "false_login": "Username", "false_login_sso": "Email"}
-SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc"]
+NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress", "soc": "User",
+        "false_login": "Username", "false_login_sso": "Email", "gophish": "email"}
+SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc", "gophish"]
 
 XLSX_MAX_ROWS = 100_000   # csv-only above this: openpyxl writes 200k rows in 118s, 100k in ~60s
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
@@ -80,10 +80,12 @@ def session(sid):
 
 def summarise(df):
     if not len(df):
-        return {"rows": 0, "outcome": {}, "phished": {}, "o365": {}, "soc": {}, "reported": {}}
+        return {"rows": 0, "outcome": {}, "gophish": {}, "phished": {},
+                "o365": {}, "soc": {}, "reported": {}}
     vc = lambda col: {(k or "(blank)"): int(v) for k, v in df[col].value_counts().items()}
-    return {"rows": int(len(df)), "outcome": vc(pr.COL_OUTCOME), "phished": vc(pr.COL_PHISHED),
-            "o365": vc(pr.COL_O365), "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
+    return {"rows": int(len(df)), "outcome": vc(pr.COL_OUTCOME), "gophish": vc(pr.COL_GOPHISH),
+            "phished": vc(pr.COL_PHISHED), "o365": vc(pr.COL_O365),
+            "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
 
 
 def do_run(payload, logs=None):
@@ -125,25 +127,36 @@ def do_run(payload, logs=None):
             done(f"read {name}: {len(frames[key])} rows")
 
     done = stage("running the lookups")
-    final = pr.run(log=logs.append, **frames)
+    final, sheets = pr.run(log=logs.append, **frames)
     done("lookups done")
 
-    out = final
-    rows = len(out)
+    # step 4's GoPhish sheets ride in the same workbook as the report, so a run
+    # is still one download. Sheet names are what the SOP calls them.
+    rows = len(final)
     stem = "Final_Report"
+    files = []
     if rows <= XLSX_MAX_ROWS:
-        done = stage(f"writing {stem}.xlsx ({rows} rows)")
-        pr.write_xlsx(run / f"{stem}.xlsx", {"Final Report": out})
-        name = f"{stem}.xlsx"
-    else:   # openpyxl writes ~1000 rows/s, so past the cap the one file is csv
+        tabs = {"Final Report": final, **sheets}
+        done = stage(f"writing {stem}.xlsx ({rows} rows, {len(tabs)} sheets)")
+        pr.write_xlsx(run / f"{stem}.xlsx", tabs)
+        done(f"wrote {stem}.xlsx")
+        files.append(f"{stem}.xlsx")
+    else:   # openpyxl writes ~1000 rows/s, so past the cap the report is csv and
+            # the GoPhish sheets - which come from the much smaller events file -
+            # go to their own workbook rather than being dropped
         done = stage(f"writing {stem}.csv ({rows} rows, too many for xlsx)")
-        out.to_csv(run / f"{stem}.csv", index=False)
-        name = f"{stem}.csv"
-    done(f"wrote {name}")
+        final.to_csv(run / f"{stem}.csv", index=False)
+        done(f"wrote {stem}.csv")
+        files.append(f"{stem}.csv")
+        if sheets:
+            done = stage(f"writing GoPhish_Sheets.xlsx ({len(sheets)} sheets)")
+            pr.write_xlsx(run / "GoPhish_Sheets.xlsx", sheets)
+            done("wrote GoPhish_Sheets.xlsx")
+            files.append("GoPhish_Sheets.xlsx")
     logs.append(f"total {time.perf_counter() - started:.1f}s")
 
     return {"run": run.name, "log": logs,
-            "files": [{"name": name, "url": f"/runs/{run.name}/{name}"}],
+            "files": [{"name": n, "url": f"/runs/{run.name}/{n}"} for n in files],
             "final": summarise(final)}
 
 
