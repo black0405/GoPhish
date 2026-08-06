@@ -111,6 +111,21 @@ def norm(s):
     return out.replace({"": pd.NA})
 
 
+def canon_log_type(s, log=print):
+    """Mimecast's Log Type goes into Outcome as-is, and later steps compare that
+    text exactly ("User Click"), so a row spelled "user click" or with a double
+    space would silently never match. Recognised values are rewritten to the
+    spelling MIMECAST_SEVERITY uses; anything else is passed through and named."""
+    s = s.astype("string").str.strip().str.replace(r"\s+", " ", regex=True)
+    known = {k.casefold(): k for k in MIMECAST_SEVERITY}
+    out = s.str.casefold().map(known)
+    odd = s[out.isna() & s.notna() & s.ne("")]
+    if len(odd):
+        shown = ", ".join(f"{v!r} ({n})" for v, n in odd.value_counts().head(5).items())
+        log(f"    ! Log Type values not recognised, passed through as-is: {shown}")
+    return out.fillna(s)
+
+
 def col_of(df, names, idx):
     """A column by header name, falling back to its spreadsheet position."""
     byname = {str(c).strip().casefold(): c for c in df.columns}
@@ -247,7 +262,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     step("3", "Mimecast activity", mimecast is not None)
     if mimecast is not None:
         key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type"], 14)
-        k, v = norm(mimecast[key]), mimecast[val].astype(str).str.strip()
+        k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
         # a user usually has several Mimecast rows (sent, then opened, then
         # clicked); keep the furthest they got rather than whichever sorted last
         mm = pd.DataFrame({"_k": k, "_v": v, "_r": v.map(MIMECAST_SEVERITY).fillna(0)})
@@ -310,21 +325,30 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # them clicking the report button, not the phish. Runs last: it needs the
     # Outcome from steps 2-3 and Reported (Yes/No) from step 1.
     log("  5   reconcile Outcome")
-    fix = base[COL_OUTCOME].eq("User Click") & base[COL_REPORTED].eq("Yes")
+    click = base[COL_OUTCOME].eq("User Click")
+    yes = base[COL_REPORTED].eq("Yes")
+    fix = click & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
-    log(f"    User Click + Reported Yes -> Email Opened: {int(fix.sum())}")
+    # both counts, so a zero result says which half of the rule was empty
+    log(f"    User Click: {int(click.sum())}, Reported Yes: {int(yes.sum())}, "
+        f"both -> Email Opened: {int(fix.sum())}")
 
     # --- step 6: for Germany only, an Outcome still reading Not Found or User
     # Click is replaced by that row's GoPhish value. Any other Outcome stands -
     # a German user with Submitted Data keeps it.
     log("  6   German rows take the GoPhish value")
-    country = col_of(base, ["Country"], 1)
-    de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-    take = (de & base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
-            & ~base[COL_GOPHISH].isin(["", NOT_FOUND]))
-    base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
-    log(f"    {country} = Germany: {int(de.sum())} rows, "
-        f"{int(take.sum())} taking their GoPhish value into Outcome")
+    # By name only. The generated columns are appended to the base, so a
+    # positional fallback here could land on one of those rather than column B.
+    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
+    if country is None:
+        log("    ! base file has no Country column - step 6 skipped")
+    else:
+        de = base[country].astype(str).str.strip().str.casefold().eq("germany")
+        take = (de & base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
+                & ~base[COL_GOPHISH].isin(["", NOT_FOUND]))
+        base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+        log(f"    {country} = Germany: {int(de.sum())} rows, "
+            f"{int(take.sum())} taking their GoPhish value into Outcome")
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
@@ -549,6 +573,24 @@ def check_lookup_fallback():
     assert any("using RecipientAddress" in s for s in said), said
 
 
+def check_step5_spelling():
+    """Mimecast writes Outcome, so step 5 must fire whatever case or spacing the
+    export uses for User Click."""
+    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com", "c@x.com", "d@x.com"]})
+    mm = pd.DataFrame({"To": ["a@x.com", "b@x.com", "c@x.com", "d@x.com"],
+                       "Log Type": ["User Click", "user click", "User  Click", " USER CLICK "]})
+    o365 = pd.DataFrame({"SenderAddress": ["a@x.com", "b@x.com", "c@x.com"],
+                         "Reported": ["o365"] * 3})
+    final, _ = run(base, mimecast=mm, o365=o365, log=lambda *_: None)
+    # the first three reported it; the fourth did not, so it stays a click
+    assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["User Click"], list(final[COL_OUTCOME])
+
+    # a base with no Country column must not fall back onto a generated one
+    said = []
+    run(pd.DataFrame({"Employee Email": ["a@x.com"]}), mimecast=mm, log=said.append)
+    assert any("no Country column" in s for s in said), said
+
+
 def check_mimecast_columns():
     """2.3 finds To and Log Type by position (C and O) when the headers differ."""
     base = pd.DataFrame({"Employee Email": ["a@x.com"]})
@@ -563,6 +605,7 @@ def selftest():
     check_outcome_pairs()
     check_lookup_fallback()
     check_mimecast_columns()
+    check_step5_spelling()
     check_gophish_file_order()
     final, books = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
