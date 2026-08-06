@@ -39,6 +39,7 @@ Source File
 
  GoPhish_Events_non_german
 
+campaign_id
 email
 time
 message
