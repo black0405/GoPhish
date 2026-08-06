@@ -82,7 +82,10 @@ def gophish_split(g, events, details_idx, label, log):
     log(f"    {det} contains linux, not android: {int(linux.sum())} rows moved to "
         f"'{label}{SHEET_EXCLUDED}', {len(kept)} rows left")
 
-    sheets = {f"{label}{SHEET_EXCLUDED}": g[linux].copy()}
+    # the untouched export leads each group, so the workbook shows what was split
+    # and what it was split from
+    sheets = {f"{label}gophish data": g.copy(),
+              f"{label}{SHEET_EXCLUDED}": g[linux].copy()}
     message = kept[msg].astype("string").str.strip()
     frames = {}
     for event in events:
@@ -516,9 +519,14 @@ def selftest():
 
     # step 4: the Linux (non-Android) row is moved out and never mapped, the
     # Clicked Link pass runs before Email Sent, the rest say Not Found
-    assert list(sheets) == [SHEET_EXCLUDED, "clicked link", "email sent",
-                            "german " + SHEET_EXCLUDED, "german clicked link",
-                            "german email sent", "german submitted data"], list(sheets)
+    assert list(sheets) == ["gophish data", SHEET_EXCLUDED, "clicked link", "email sent",
+                            "german gophish data", "german " + SHEET_EXCLUDED,
+                            "german clicked link", "german email sent",
+                            "german submitted data"], list(sheets)
+    # the original sheets are the untouched exports, Linux rows and all
+    assert len(sheets["gophish data"]) == 5 and len(sheets["german gophish data"]) == 4
+    assert sheets["gophish data"].equals(fixtures()["gophish"])
+    assert sheets["german gophish data"].equals(fixtures()["gophish_de"])
     # 4.2 splits only - details is column F there, so the Linux row must still
     # be found, and no report column may change because of the German file
     assert list(sheets["german " + SHEET_EXCLUDED]["email"]) == ["de4@x.com"]
