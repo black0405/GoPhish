@@ -12,8 +12,9 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left
     5    Reconcile         Outcome User Click + Reported Yes -> Email Opened
-    6    Germany           Country (B) = Germany and Outcome still Not Found or
+    6    Germany           Country = Germany and Outcome still Not Found or
                            User Click -> take that row's GoPhish value
+    7    Everywhere else   the same rows outside Germany -> Email Sent
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -350,15 +351,24 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # By name only. The generated columns are appended to the base, so a
     # positional fallback here could land on one of those rather than column B.
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
+    unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     if country is None:
-        log("    ! base file has no Country column - step 6 skipped")
+        log("    ! base file has no Country column - steps 6 and 7 skipped")
     else:
         de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-        take = (de & base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
-                & ~base[COL_GOPHISH].isin(["", NOT_FOUND]))
+        take = de & unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
         base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
         log(f"    {country} = Germany: {int(de.sum())} rows, "
             f"{int(take.sum())} taking their GoPhish value into Outcome")
+
+        # --- step 7: everywhere except Germany, an Outcome still reading Not
+        # Found or User Click becomes Email Sent. Same filter as step 6, the
+        # other side of the country split; a settled Outcome is left alone.
+        log("  7   everywhere but Germany -> Email Sent")
+        rest = ~de & unsettled()
+        base.loc[rest, COL_OUTCOME] = "Email Sent"
+        log(f"    {country} not Germany: {int((~de).sum())} rows, "
+            f"{int(rest.sum())} set to Email Sent")
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
@@ -625,10 +635,11 @@ def selftest():
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
             "opened": "Email Opened",
-            "escalated": "User Click",      # furthest of its three Mimecast rows, no report
-            "clickreported": "Email Opened",  # step 5: User Click + Reported Yes
-            "reported": NOT_FOUND,          # reported it, but no outcome source names them
-            "untouched": NOT_FOUND,         # looked up by every source, matched by none
+            # step 7: outside Germany, a leftover User Click or Not Found -> Email Sent
+            "escalated": "Email Sent",      # was User Click, nobody reported it
+            "clickreported": "Email Opened",  # step 5 settled it before step 7 could
+            "reported": "Email Sent",       # was Not Found
+            "untouched": "Email Sent",      # was Not Found
             # step 6: Germany, Not Found or User Click, takes its GoPhish value
             "de_sub": "Submitted Data",
             "de_click": "Clicked Link",     # was User Click from Mimecast
@@ -696,6 +707,9 @@ def selftest():
                "de_excluded": GOPHISH_DEFAULT,  # its rows were excluded as Linux
                "de_keep": GOPHISH_DEFAULT}    # neither file names them
     assert NOT_FOUND not in set(f[COL_GOPHISH]), set(f[COL_GOPHISH])
+    # steps 6 and 7 between them settle every row, so Outcome has no leftovers
+    assert NOT_FOUND not in set(f[COL_OUTCOME]), set(f[COL_OUTCOME])
+    assert "User Click" not in set(f[COL_OUTCOME]), set(f[COL_OUTCOME])
     for name, value in want_gp.items():
         assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
 
