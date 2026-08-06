@@ -82,12 +82,10 @@ def session(sid):
 
 def summarise(df):
     if not len(df):
-        return {"rows": 0, "outcome": {}, "gophish": {}, "phished": {},
-                "o365": {}, "soc": {}, "reported": {}}
+        return {"rows": 0, "outcome": {}, "gophish": {}, "o365": {}, "soc": {}, "reported": {}}
     vc = lambda col: {(k or "(blank)"): int(v) for k, v in df[col].value_counts().items()}
     return {"rows": int(len(df)), "outcome": vc(pr.COL_OUTCOME), "gophish": vc(pr.COL_GOPHISH),
-            "phished": vc(pr.COL_PHISHED), "o365": vc(pr.COL_O365),
-            "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
+            "o365": vc(pr.COL_O365), "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
 
 
 def do_run(payload, logs=None):

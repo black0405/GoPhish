@@ -57,7 +57,6 @@ ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
 FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]      # 2.1, six pairs -> Submitted Data
 FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicked Link
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
-PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                      # 4.1, in this order
 GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2, sheets only
@@ -138,10 +137,6 @@ def read_any(path, need=None):
     df = raw.iloc[i + 1:].reset_index(drop=True)
     df.columns = dedup(row(i))
     return df
-
-
-def phished(outcome):
-    return outcome.isin(PHISHED_YES).map({True: "Yes", False: "No"})
 
 
 def run(base, false_login=None, false_login_sso=None, mimecast=None,
@@ -287,7 +282,8 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         sheets.update(new)
         log("    sheets only - no column is filled from the German file yet")
 
-    base[COL_PHISHED] = phished(base[COL_OUTCOME])
+    # Phished Yes/No is left empty on purpose - the rule for it has not been
+    # specified, so the column ships blank rather than guessed at.
     return base, sheets
 
 
@@ -301,9 +297,9 @@ def counts(df):
     if not len(df):
         return "  (empty)"
     o = df[COL_OUTCOME].replace("", "(blank)").value_counts()
-    p = df[COL_PHISHED].value_counts()
+    g = df[COL_GOPHISH].replace("", "(blank)").value_counts()
     return ("  Outcome: " + ", ".join(f"{k}={v}" for k, v in o.items()) +
-            "\n  Phished: " + ", ".join(f"{k}={v}" for k, v in p.items()))
+            "\n  GoPhish: " + ", ".join(f"{k}={v}" for k, v in g.items()))
 
 
 def main(argv=None):
@@ -436,9 +432,9 @@ def check_read_any():
 def check_outcome_pairs():
     """Every mapping in the SOP tables must land on its own, and only the listed
     source columns count - an identity sitting in an unlisted column is a miss."""
-    tables = [("false_login", FALSE_LOGIN_COLS, "Submitted Data", "Yes"),
-              ("false_login_sso", FALSE_LOGIN_SSO_COLS, "Clicked Link", "Yes")]
-    for kw, cols, outcome, phished in tables:
+    tables = [("false_login", FALSE_LOGIN_COLS, "Submitted Data"),
+              ("false_login_sso", FALSE_LOGIN_SSO_COLS, "Clicked Link")]
+    for kw, cols, outcome in tables:
         for bcol in ID_COLS:
             for scol in cols:
                 base = pd.DataFrame({"Employee Email": ["hit@x.com", "miss@x.com"],
@@ -449,7 +445,6 @@ def check_outcome_pairs():
                 final, _ = run(base, log=lambda *_: None, **{kw: src})
                 where = f"{kw}: {bcol} <- {scol}"
                 assert list(final[COL_OUTCOME]) == [outcome, NOT_FOUND], f"{where}: {list(final[COL_OUTCOME])}"
-                assert list(final[COL_PHISHED]) == [phished, "No"], f"{where}: {list(final[COL_PHISHED])}"
 
         # the same identity in a column the table does not list must not match
         base = pd.DataFrame({"Employee Email": ["hit@x.com"]})
@@ -510,8 +505,7 @@ def selftest():
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 
-    assert list(f[COL_PHISHED]) == [phished(pd.Series([o])).iloc[0] for o in f[COL_OUTCOME]]
-    assert f.loc["untouched", COL_PHISHED] == "No"
+    assert set(f[COL_PHISHED]) == {""}, "Phished Yes/No is not specified yet - it must stay empty"
     assert f.loc["reported", COL_REPORTED] == "Yes"
     assert f.loc["opened", COL_REPORTED] == "No"
     # a hit carries the report file's own value; a miss says Not Found
