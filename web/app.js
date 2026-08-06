@@ -138,7 +138,7 @@ function buildDrops() {
 function metrics(s) {
   return `<div class="metric rows"><div class="lab">rows</div><div class="val">${s.rows}</div></div>
           <div class="metric added"><div class="lab">reported yes</div><div class="val">${s.reported?.Yes || 0}</div></div>
-          <div class="metric removed"><div class="lab">outcome found</div><div class="val">${s.rows - (s.outcome?.['Not Found'] || 0) - (s.outcome?.['(blank)'] || 0)}</div></div>`;
+          <div class="metric removed"><div class="lab">phished yes</div><div class="val">${s.phished?.Yes || 0}</div></div>`;
 }
 
 function chips(counts) {
@@ -194,7 +194,7 @@ function fillLog(res) {
     summarise('Reported to O365', s.o365),
     summarise('Reported to SOC', s.soc),
     `Reported (Yes/No): Yes ${s.reported.Yes || 0}, No ${s.reported.No || 0}`,
-    'Phished Yes/No: left empty - rule not specified yet',
+    `Phished Yes/No: Yes ${s.phished?.Yes || 0}, No ${s.phished?.No || 0}`,
     '',
     '── pipeline ──',
     ...res.log,

@@ -16,6 +16,7 @@ The steps built so far, over the whole Userbase file:
                            User Click -> take that row's GoPhish value
     7    Everywhere else   the same rows outside Germany -> Email Opened if they
                            reported the mail, Email Sent if they did not
+    8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -63,6 +64,7 @@ ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
 FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]      # 2.1, six pairs -> Submitted Data
 FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicked Link
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
+PHISHED_YES = {"Submitted Data", "Clicked Link"}   # step 8: the outcomes that count as phished
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                       # 4.1 sheets and fill order
 GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2 sheet order
@@ -375,8 +377,20 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             f"{int(opened.sum())} reported -> Email Opened, "
             f"{int(sent.sum())} not reported -> Email Sent")
 
-    # Phished Yes/No is left empty on purpose - the rule for it has not been
-    # specified, so the column ships blank rather than guessed at.
+    # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
+    # acted on the phish, No for every other settled outcome. A row whose Outcome
+    # is still blank had no outcome source at all, so it stays blank too.
+    log("  8   Phished Yes/No")
+    left = base[COL_OUTCOME].eq(NOT_FOUND)
+    if left.any():   # steps 6 and 7 should have settled all of these
+        log(f"    ! {int(left.sum())} rows still read {NOT_FOUND} in Outcome - "
+            "they count as No; check step 6 and 7's country filter")
+    known = base[COL_OUTCOME].ne("")
+    base.loc[known, COL_PHISHED] = (base.loc[known, COL_OUTCOME]
+                                    .isin(PHISHED_YES).map({True: "Yes", False: "No"}))
+    log(f"    {', '.join(sorted(PHISHED_YES))} -> Yes: {int(base[COL_PHISHED].eq('Yes').sum())}, "
+        f"No: {int(base[COL_PHISHED].eq('No').sum())}")
+
     return base, books
 
 
@@ -389,10 +403,10 @@ def write_xlsx(path, sheets):
 def counts(df):
     if not len(df):
         return "  (empty)"
-    o = df[COL_OUTCOME].replace("", "(blank)").value_counts()
-    g = df[COL_GOPHISH].replace("", "(blank)").value_counts()
-    return ("  Outcome: " + ", ".join(f"{k}={v}" for k, v in o.items()) +
-            "\n  GoPhish: " + ", ".join(f"{k}={v}" for k, v in g.items()))
+    line = lambda col: ", ".join(f"{k}={v}" for k, v in
+                                 df[col].replace("", "(blank)").value_counts().items())
+    return (f"  Outcome: {line(COL_OUTCOME)}\n  GoPhish: {line(COL_GOPHISH)}"
+            f"\n  Phished: {line(COL_PHISHED)}")
 
 
 def main(argv=None):
@@ -655,7 +669,14 @@ def selftest():
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 
-    assert set(f[COL_PHISHED]) == {""}, "Phished Yes/No is not specified yet - it must stay empty"
+    # step 8: Yes only for the two outcomes that mean the user acted
+    for name, outcome in f[COL_OUTCOME].items():
+        want_p = "Yes" if outcome in PHISHED_YES else "No"
+        assert f.loc[name, COL_PHISHED] == want_p, f"{name}: {outcome!r} -> {f.loc[name, COL_PHISHED]!r}"
+    assert set(f[COL_PHISHED]) == {"Yes", "No"}, set(f[COL_PHISHED])
+    # with no outcome source at all, Outcome is blank and Phished stays blank
+    blank, _ = run(pd.DataFrame({"Employee Email": ["a@x.com"]}), log=lambda *_: None)
+    assert list(blank[COL_PHISHED]) == [""], list(blank[COL_PHISHED])
     assert f.loc["reported", COL_REPORTED] == "Yes"
     assert f.loc["opened", COL_REPORTED] == "No"
     # a hit carries the report file's own value; a miss says Not Found
