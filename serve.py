@@ -31,11 +31,9 @@ WEB = ROOT / "web"
 RUNS = ROOT / "runs"
 
 # key -> the column read_any looks for when the export has banner rows above the header
-NEED = {"base": "Employee Email", "mimecast": "To", "gophish": "email",
-        "o365": "SenderAddress", "soc": "User", "gophish_de": "email",
-        "false_login": "Username", "false_login_sso": "Email"}
-SOURCES = ["base", "false_login", "false_login_sso", "mimecast",
-           "gophish", "o365", "soc", "gophish_de"]
+NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress",
+        "soc": "User", "false_login": "Username", "false_login_sso": "Email"}
+SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc"]
 PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
 
 XLSX_MAX_ROWS = 100_000   # csv-only above this: openpyxl writes 200k rows in 118s, 100k in ~60s
@@ -134,11 +132,9 @@ def do_run(payload, logs=None):
             done(f"read {name}: {len(frames[key])} rows")
 
     done = stage("running the lookups")
-    final, _ger, _tabs = pr.run(log=logs.append, **frames)
+    final = pr.run(log=logs.append, **frames)
     done("lookups done")
 
-    # One deliverable: the userbase plus the columns the steps above fill. The
-    # German split stays out of it - that is part 2.
     out = final
     rows = len(out)
     stem = "Final_Report"
