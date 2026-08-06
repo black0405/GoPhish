@@ -116,9 +116,13 @@ def canon_log_type(s, log=print):
     text exactly ("User Click"), so a row spelled "user click" or with a double
     space would silently never match. Recognised values are rewritten to the
     spelling MIMECAST_SEVERITY uses; anything else is passed through and named."""
-    s = s.astype("string").str.strip().str.replace(r"\s+", " ", regex=True)
-    known = {k.casefold(): k for k in MIMECAST_SEVERITY}
-    out = s.str.casefold().map(known)
+    # \s does not cover the non-breaking space under every pandas string backend,
+    # and Excel exports are full of them, so replace it by hand before collapsing
+    s = s.astype("string").str.replace(" ", " ", regex=False)
+    s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+    # compare with the spaces taken out entirely, so "UserClick" matches too
+    known = {"".join(k.split()).casefold(): k for k in MIMECAST_SEVERITY}
+    out = s.str.replace(" ", "", regex=False).str.casefold().map(known)
     odd = s[out.isna() & s.notna() & s.ne("")]
     if len(odd):
         shown = ", ".join(f"{v!r} ({n})" for v, n in odd.value_counts().head(5).items())
@@ -332,6 +336,12 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # both counts, so a zero result says which half of the rule was empty
     log(f"    User Click: {int(click.sum())}, Reported Yes: {int(yes.sum())}, "
         f"both -> Email Opened: {int(fix.sum())}")
+    # and what the reported rows actually say, quoted, so a value that only looks
+    # like "User Click" is visible rather than leaving the rule looking broken
+    seen = base.loc[yes, COL_OUTCOME].value_counts().head(8)
+    if len(seen):
+        log("    Outcome on the Reported Yes rows: "
+            + ", ".join(f"{v!r} ({n})" for v, n in seen.items()))
 
     # --- step 6: for Germany only, an Outcome still reading Not Found or User
     # Click is replaced by that row's GoPhish value. Any other Outcome stands -
@@ -578,11 +588,13 @@ def check_step5_spelling():
     export uses for User Click."""
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com", "c@x.com", "d@x.com"]})
     mm = pd.DataFrame({"To": ["a@x.com", "b@x.com", "c@x.com", "d@x.com"],
-                       "Log Type": ["User Click", "user click", "User  Click", " USER CLICK "]})
+                       "Log Type": ["User Click", "user  click", "User Click", "USERCLICK"]})
     o365 = pd.DataFrame({"SenderAddress": ["a@x.com", "b@x.com", "c@x.com"],
                          "Reported": ["o365"] * 3})
+    mm["Log Type"] = ["User Click", "user  click", "User Click", "USERCLICK"]
     final, _ = run(base, mimecast=mm, o365=o365, log=lambda *_: None)
-    # the first three reported it; the fourth did not, so it stays a click
+    # every spelling counts as a click - case, doubled space, non-breaking space,
+    # no space at all. The fourth did not report it, so it stays a click.
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["User Click"], list(final[COL_OUTCOME])
 
     # a base with no Country column must not fall back onto a generated one
