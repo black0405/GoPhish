@@ -11,6 +11,7 @@ The steps built so far, over the whole Userbase file:
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left
+    5    Reconcile         Outcome User Click + Reported Yes -> Email Opened
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -303,6 +304,14 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         base.loc[rest, COL_GOPHISH] = GOPHISH_DEFAULT
         log(f"    {int(rest.sum())} rows matched by neither file -> {GOPHISH_DEFAULT}")
 
+    # --- step 5: a Mimecast User Click from someone who reported the mail was
+    # them clicking the report button, not the phish. Runs last: it needs the
+    # Outcome from steps 2-3 and Reported (Yes/No) from step 1.
+    log("  5   reconcile Outcome")
+    fix = base[COL_OUTCOME].eq("User Click") & base[COL_REPORTED].eq("Yes")
+    base.loc[fix, COL_OUTCOME] = "Email Opened"
+    log(f"    User Click + Reported Yes -> Email Opened: {int(fix.sum())}")
+
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
     return base, books
@@ -387,7 +396,7 @@ def fixtures():
                 "SSOUPN as per AD (O365)": f"{name}@ad.x.com"}
 
     names = ["submitted", "clicked", "opened", "escalated", "reported", "untouched",
-             "de_sub", "de_click", "de_sent", "de_both", "de_excluded"]
+             "clickreported", "de_sub", "de_click", "de_sent", "de_both", "de_excluded"]
     base = pd.DataFrame([base_row(n, "Germany" if n.startswith("de_") else "India") for n in names])
 
     # 2.1 matches on the Saviynt identity, 2.2 on the AD one - both must work.
@@ -396,12 +405,13 @@ def fixtures():
     # "submitted" is here too and must keep Submitted Data; "escalated" has three
     # rows and must end on the furthest of them
     mimecast = pd.DataFrame({
-        "To": ["opened@x.com", "submitted@x.com",
+        "To": ["opened@x.com", "submitted@x.com", "clickreported@x.com",
                "escalated@x.com", "escalated@x.com", "escalated@x.com"],
-        "Log Type": ["Email Opened", "Email Opened",
+        "Log Type": ["Email Opened", "Email Opened", "User Click",
                      "Email Sent", "User Click", "Email Opened"]})
     # value columns as in the real exports: O365 column K "Reported", SOC column D "reported"
-    o365 = pd.DataFrame({"SenderAddress": ["reported@x.com"], "Reported": ["o365"]})
+    o365 = pd.DataFrame({"SenderAddress": ["reported@x.com", "clickreported@x.com"],
+                         "Reported": ["o365", "o365"]})
     soc = pd.DataFrame({"User": ["reported@x.com"], "reported": ["soc-support"]})
     # "clicked" is in both event sheets and must take the Clicked Link pass;
     # "penguin" is Linux without Android and must be excluded before any mapping
@@ -544,7 +554,8 @@ def selftest():
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
             "opened": "Email Opened",
-            "escalated": "User Click",      # furthest of its three Mimecast rows
+            "escalated": "User Click",      # furthest of its three Mimecast rows, no report
+            "clickreported": "Email Opened",  # step 5: User Click + Reported Yes
             "reported": NOT_FOUND,          # reported it, but no outcome source names them
             "untouched": NOT_FOUND}         # looked up by every source, matched by none
     for name, outcome in want.items():
@@ -558,6 +569,9 @@ def selftest():
     assert f.loc["reported", COL_SOC] == "soc-support", f.loc["reported", COL_SOC]
     assert f.loc["untouched", COL_O365] == NOT_FOUND and f.loc["untouched", COL_SOC] == NOT_FOUND
     assert set(f[COL_O365]) == {"o365", NOT_FOUND}, set(f[COL_O365])
+    # step 5 only touches User Click rows that were reported
+    assert f.loc["clickreported", COL_REPORTED] == "Yes"
+    assert f.loc["escalated", COL_REPORTED] == "No", "a User Click nobody reported must stay put"
 
     # step 4: the Linux (non-Android) row is moved out and never mapped, the
     # Clicked Link pass runs before Email Sent, the rest say Not Found
