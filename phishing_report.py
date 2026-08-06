@@ -61,15 +61,18 @@ MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                      # 4.1, in this order
 GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2, sheets only
 SHEET_EXCLUDED = "excluded linux"
+# each GoPhish file becomes its own workbook, so the two download separately
+BOOK_GOPHISH, BOOK_GOPHISH_DE = "GoPhish_non_german", "GoPhish_german"
 # details sits in a different column in the two exports: E in the non-German
 # file (campaign_id, email, time, message, details), F in the German one, which
 # has a Sort column before it. Both are found by name first.
 GOPHISH_DETAILS_IDX, GOPHISH_DE_DETAILS_IDX = 4, 5
 
 
-def gophish_split(g, events, details_idx, label, log):
+def gophish_split(g, events, details_idx, log):
     """The Linux (non-Android) rows move out to their own sheet and take no
-    further part; what is left is split into one sheet per event value.
+    further part; what is left is split into one sheet per event value. The
+    sheets become their own workbook, one per GoPhish file.
 
     Returns ({sheet name: frame}, {event: frame}, email column, message series)."""
     em = col_of(g, ["email"], 1)
@@ -80,18 +83,17 @@ def gophish_split(g, events, details_idx, label, log):
     linux = d.str.contains("linux", case=False, na=False) & ~d.str.contains("android", case=False, na=False)
     kept = g[~linux]
     log(f"    {det} contains linux, not android: {int(linux.sum())} rows moved to "
-        f"'{label}{SHEET_EXCLUDED}', {len(kept)} rows left")
+        f"'{SHEET_EXCLUDED}', {len(kept)} rows left")
 
-    # the untouched export leads each group, so the workbook shows what was split
-    # and what it was split from
-    sheets = {f"{label}gophish data": g.copy(),
-              f"{label}{SHEET_EXCLUDED}": g[linux].copy()}
+    # the untouched export leads the workbook, so it shows what was split and
+    # what it was split from
+    sheets = {"gophish data": g.copy(), SHEET_EXCLUDED: g[linux].copy()}
     message = kept[msg].astype("string").str.strip()
     frames = {}
     for event in events:
         frames[event] = kept[message.str.casefold() == event.casefold()]
-        sheets[f"{label}{event.lower()}"] = frames[event].copy()
-        log(f"    '{label}{event.lower()}' sheet: {len(frames[event])} rows")
+        sheets[event.lower()] = frames[event].copy()
+        log(f"    '{event.lower()}' sheet: {len(frames[event])} rows")
     return sheets, frames, em, message
 
 
@@ -144,10 +146,11 @@ def read_any(path, need=None):
 
 def run(base, false_login=None, false_login_sso=None, mimecast=None,
         o365=None, soc=None, gophish=None, gophish_de=None, log=print):
-    """Returns (report frame, {sheet name: frame}) - the report is the userbase
-    with NEW_COLS filled in, the sheets are step 4's split of the GoPhish file."""
+    """Returns (report frame, {workbook stem: {sheet name: frame}}) - the report
+    is the userbase with NEW_COLS filled in, and each GoPhish file supplied gets
+    a workbook of its own holding step 4's split of it."""
     base = base.copy()
-    sheets = {}
+    books = {}
     for c in NEW_COLS:
         base[c] = ""
 
@@ -263,8 +266,8 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     step("4.1", "GoPhish activity (non-German)", gophish is not None)
     if gophish is not None:
         new, frames, em, message = gophish_split(
-            gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, "", log)
-        sheets.update(new)
+            gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
+        books[BOOK_GOPHISH] = new
         for event, frame in frames.items():
             # carry the sheet's own message value, the same as the reporting lookups
             hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
@@ -281,13 +284,13 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     step("4.2", "GoPhish sheets (German)", gophish_de is not None)
     if gophish_de is not None:
         new, _, _, _ = gophish_split(
-            gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, "german ", log)
-        sheets.update(new)
+            gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, log)
+        books[BOOK_GOPHISH_DE] = new
         log("    sheets only - no column is filled from the German file yet")
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
-    return base, sheets
+    return base, books
 
 
 def write_xlsx(path, sheets):
@@ -340,7 +343,7 @@ def main(argv=None):
         gophish_de=read_any(a.gophish_de, "email") if a.gophish_de else None,
     )
     print(f"base file: {len(src['base'])} rows")
-    final, sheets = run(**src)
+    final, books = run(**src)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -348,7 +351,11 @@ def main(argv=None):
     # and the slow one can be turned off while iterating on the rules
     final.to_csv(out / "Final_Report.csv", index=False)
     if not a.no_xlsx:
-        write_xlsx(out / "Final_Report.xlsx", {"Final Report": final, **sheets})
+        write_xlsx(out / "Final_Report.xlsx", {"Final Report": final})
+    # the GoPhish workbooks are small and are always written, one per file
+    for stem, sheets in books.items():
+        write_xlsx(out / f"{stem}.xlsx", sheets)
+        print(f"{stem}.xlsx: " + ", ".join(f"{n} ({len(f)})" for n, f in sheets.items()))
 
     ext = "csv" if a.no_xlsx else "csv + xlsx"
     print(f"\nFinal_Report ({ext})  {len(final)} rows\n{counts(final)}")
@@ -496,7 +503,7 @@ def selftest():
     check_outcome_pairs()
     check_lookup_fallback()
     check_mimecast_columns()
-    final, sheets = run(log=lambda *_: None, **fixtures())
+    final, books = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
@@ -519,22 +526,30 @@ def selftest():
 
     # step 4: the Linux (non-Android) row is moved out and never mapped, the
     # Clicked Link pass runs before Email Sent, the rest say Not Found
-    assert list(sheets) == ["gophish data", SHEET_EXCLUDED, "clicked link", "email sent",
-                            "german gophish data", "german " + SHEET_EXCLUDED,
-                            "german clicked link", "german email sent",
-                            "german submitted data"], list(sheets)
-    # the original sheets are the untouched exports, Linux rows and all
-    assert len(sheets["gophish data"]) == 5 and len(sheets["german gophish data"]) == 4
-    assert sheets["gophish data"].equals(fixtures()["gophish"])
-    assert sheets["german gophish data"].equals(fixtures()["gophish_de"])
+    # one workbook per GoPhish file, each led by the untouched export
+    assert list(books) == [BOOK_GOPHISH, BOOK_GOPHISH_DE], list(books)
+    assert list(books[BOOK_GOPHISH]) == ["gophish data", SHEET_EXCLUDED,
+                                         "clicked link", "email sent"], list(books[BOOK_GOPHISH])
+    assert list(books[BOOK_GOPHISH_DE]) == ["gophish data", SHEET_EXCLUDED, "clicked link",
+                                            "email sent", "submitted data"], list(books[BOOK_GOPHISH_DE])
+    assert books[BOOK_GOPHISH]["gophish data"].equals(fixtures()["gophish"])
+    assert books[BOOK_GOPHISH_DE]["gophish data"].equals(fixtures()["gophish_de"])
+    # every row of each export lands in exactly one of that workbook's other sheets
+    for book, src in ((BOOK_GOPHISH, "gophish"), (BOOK_GOPHISH_DE, "gophish_de")):
+        parts = sum(len(f) for n, f in books[book].items() if n != "gophish data")
+        assert parts == len(fixtures()[src]), f"{book}: {parts} != {len(fixtures()[src])}"
+
     # 4.2 splits only - details is column F there, so the Linux row must still
     # be found, and no report column may change because of the German file
-    assert list(sheets["german " + SHEET_EXCLUDED]["email"]) == ["de4@x.com"]
-    assert list(sheets["german clicked link"]["email"]) == ["de1@x.com"]
-    assert list(sheets["german email sent"]["email"]) == ["de2@x.com"]   # Linux Android, kept
-    assert list(sheets["german submitted data"]["email"]) == ["de3@x.com"]
+    de = books[BOOK_GOPHISH_DE]
+    assert list(de[SHEET_EXCLUDED]["email"]) == ["de4@x.com"]
+    assert list(de["clicked link"]["email"]) == ["de1@x.com"]
+    assert list(de["email sent"]["email"]) == ["de2@x.com"]   # Linux Android, kept
+    assert list(de["submitted data"]["email"]) == ["de3@x.com"]
     without_de = run(log=lambda *_: None, **{k: v for k, v in fixtures().items() if k != "gophish_de"})[0]
     assert without_de.equals(final), "the German file must not change the report"
+
+    sheets = books[BOOK_GOPHISH]
     assert list(sheets[SHEET_EXCLUDED]["email"]) == ["untouched@x.com"], sheets[SHEET_EXCLUDED]
     assert list(sheets["clicked link"]["email"]) == ["clicked@x.com", "escalated@x.com"]
     assert list(sheets["email sent"]["email"]) == ["clicked@x.com", "opened@x.com"]

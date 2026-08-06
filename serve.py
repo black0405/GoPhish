@@ -127,32 +127,31 @@ def do_run(payload, logs=None):
             done(f"read {name}: {len(frames[key])} rows")
 
     done = stage("running the lookups")
-    final, sheets = pr.run(log=logs.append, **frames)
+    final, books = pr.run(log=logs.append, **frames)
     done("lookups done")
 
-    # step 4's GoPhish sheets ride in the same workbook as the report, so a run
-    # is still one download. Sheet names are what the SOP calls them.
     rows = len(final)
     stem = "Final_Report"
     files = []
     if rows <= XLSX_MAX_ROWS:
-        tabs = {"Final Report": final, **sheets}
-        done = stage(f"writing {stem}.xlsx ({rows} rows, {len(tabs)} sheets)")
-        pr.write_xlsx(run / f"{stem}.xlsx", tabs)
+        done = stage(f"writing {stem}.xlsx ({rows} rows)")
+        pr.write_xlsx(run / f"{stem}.xlsx", {"Final Report": final})
         done(f"wrote {stem}.xlsx")
         files.append(f"{stem}.xlsx")
-    else:   # openpyxl writes ~1000 rows/s, so past the cap the report is csv and
-            # the GoPhish sheets - which come from the much smaller events file -
-            # go to their own workbook rather than being dropped
+    else:   # openpyxl writes ~1000 rows/s, so past the cap the report is csv
         done = stage(f"writing {stem}.csv ({rows} rows, too many for xlsx)")
         final.to_csv(run / f"{stem}.csv", index=False)
         done(f"wrote {stem}.csv")
         files.append(f"{stem}.csv")
-        if sheets:
-            done = stage(f"writing GoPhish_Sheets.xlsx ({len(sheets)} sheets)")
-            pr.write_xlsx(run / "GoPhish_Sheets.xlsx", sheets)
-            done("wrote GoPhish_Sheets.xlsx")
-            files.append("GoPhish_Sheets.xlsx")
+
+    # one workbook per GoPhish file, downloaded separately from the report. They
+    # come from the events exports, which are nowhere near the userbase's size,
+    # so they are always xlsx.
+    for book, sheets in books.items():
+        done = stage(f"writing {book}.xlsx ({len(sheets)} sheets)")
+        pr.write_xlsx(run / f"{book}.xlsx", sheets)
+        done(f"wrote {book}.xlsx")
+        files.append(f"{book}.xlsx")
     logs.append(f"total {time.perf_counter() - started:.1f}s")
 
     return {"run": run.name, "log": logs,
