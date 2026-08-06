@@ -9,7 +9,8 @@ The steps built so far, over the whole Userbase file:
     2.2  Clicked Link      false_login_sso, Email
     3    Mimecast          To (C) -> Log Type (O)
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
-    4.2  GoPhish German     the same split into sheets; nothing mapped from it yet
+    4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
+                           Link, Email Sent order over what 4.1 left
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -58,8 +59,9 @@ FALSE_LOGIN_COLS = ["Username", "Email (SSO)"]      # 2.1, six pairs -> Submitte
 FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicked Link
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
-GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                      # 4.1, in this order
-GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2, sheets only
+GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                       # 4.1 sheets and fill order
+GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2 sheet order
+GOPHISH_DE_FILL = ["Submitted Data", "Clicked Link", "Email Sent"]    # 4.2 fill order
 SHEET_EXCLUDED = "excluded linux"
 # each GoPhish file becomes its own workbook, so the two download separately
 BOOK_GOPHISH, BOOK_GOPHISH_DE = "GoPhish_non_german", "GoPhish_german"
@@ -263,13 +265,12 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # (non-Android) rows are moved out entirely, then one sheet per event - and
     # the GoPhish column is filled from those sheets in GOPHISH_EVENTS order,
     # each pass only filling rows the pass before it left unresolved.
-    step("4.1", "GoPhish activity (non-German)", gophish is not None)
-    if gophish is not None:
-        new, frames, em, message = gophish_split(
-            gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
-        books[BOOK_GOPHISH] = new
-        for event, frame in frames.items():
-            # carry the sheet's own message value, the same as the reporting lookups
+    def fill_gophish(frames, order, em, message):
+        """Each sheet in turn, filling only the rows still unresolved - the same
+        filter-to-Not-Found-then-map shape the Outcome steps use. The value
+        written is the sheet's own message, not a constant."""
+        for event in order:
+            frame = frames[event]
             hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
             unresolved = base[COL_GOPHISH].eq("")
             base.loc[hit.notna() & unresolved, COL_GOPHISH] = hit[hit.notna() & unresolved]
@@ -277,16 +278,25 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
                 f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier sheet")
 
-        base.loc[base[COL_GOPHISH].eq(""), COL_GOPHISH] = NOT_FOUND
+    step("4.1", "GoPhish activity (non-German)", gophish is not None)
+    if gophish is not None:
+        books[BOOK_GOPHISH], frames, em, message = gophish_split(
+            gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
+        fill_gophish(frames, GOPHISH_EVENTS, em, message)
 
-    # 4.2: the German file is split the same way, into four sheets. Nothing is
-    # mapped from it yet - the German mapping has not been specified.
-    step("4.2", "GoPhish sheets (German)", gophish_de is not None)
+    # 4.2: the German file is split the same way but into four sheets, and fills
+    # in a different order - Submitted Data first, then Clicked Link, then Email
+    # Sent - over the rows 4.1 left unresolved.
+    step("4.2", "GoPhish activity (German)", gophish_de is not None)
     if gophish_de is not None:
-        new, _, _, _ = gophish_split(
+        books[BOOK_GOPHISH_DE], frames, em, message = gophish_split(
             gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, log)
-        books[BOOK_GOPHISH_DE] = new
-        log("    sheets only - no column is filled from the German file yet")
+        fill_gophish(frames, GOPHISH_DE_FILL, em, message)
+
+    # blank is the unresolved marker while 4.1 and 4.2 run; whoever neither
+    # matched has been looked up and missed
+    if gophish is not None or gophish_de is not None:
+        base.loc[base[COL_GOPHISH].eq(""), COL_GOPHISH] = NOT_FOUND
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
@@ -371,8 +381,9 @@ def fixtures():
                 "SSOUPN as per Saviynt": f"{name}@sso.x.com",
                 "SSOUPN as per AD (O365)": f"{name}@ad.x.com"}
 
-    names = ["submitted", "clicked", "opened", "escalated", "reported", "untouched"]
-    base = pd.DataFrame([base_row(n) for n in names])
+    names = ["submitted", "clicked", "opened", "escalated", "reported", "untouched",
+             "de_sub", "de_click", "de_sent", "de_both", "de_excluded"]
+    base = pd.DataFrame([base_row(n, "Germany" if n.startswith("de_") else "India") for n in names])
 
     # 2.1 matches on the Saviynt identity, 2.2 on the AD one - both must work.
     false_login = pd.DataFrame({"Email (SSO)": ["submitted@sso.x.com"]})
@@ -396,14 +407,19 @@ def fixtures():
         "time": ["09:00"] * 5,
         "message": ["Clicked Link", "Email Sent", "Email Sent", "Clicked Link", "Clicked Link"],
         "details": ["Windows", "Windows", "Linux Android", "Windows", "Linux x86_64"]})
-    # the German export has a Sort column, so details lands one column further right
+    # the German export has a Sort column, so details lands one column further
+    # right. "de_both" is in two sheets and must take Submitted Data, which
+    # fills first here; "de_excluded" is Linux without Android.
     gophish_de = pd.DataFrame({
-        "campaign_id": ["2"] * 4,
-        "email": ["de1@x.com", "de2@x.com", "de3@x.com", "de4@x.com"],
-        "time": ["09:00"] * 4,
-        "message": ["Clicked Link", "Email Sent", "Submitted Data", "Submitted Data"],
-        "Sort": [""] * 4,
-        "details": ["Windows", "Linux Android", "Windows", "Linux x86_64"]})
+        "campaign_id": ["2"] * 6,
+        "email": ["de_click@x.com", "de_sent@x.com", "de_sub@x.com",
+                  "de_both@x.com", "de_both@x.com", "de_excluded@x.com"],
+        "time": ["09:00"] * 6,
+        "message": ["Clicked Link", "Email Sent", "Submitted Data",
+                    "Clicked Link", "Submitted Data", "Submitted Data"],
+        "Sort": [""] * 6,
+        "details": ["Windows", "Linux Android", "Windows",
+                    "Windows", "Windows", "Linux x86_64"]})
 
     return dict(base=base, false_login=false_login, false_login_sso=false_login_sso,
                 mimecast=mimecast, o365=o365, soc=soc, gophish=gophish, gophish_de=gophish_de)
@@ -474,6 +490,19 @@ def check_outcome_pairs():
     assert both(mimecast=mm) == ["Email Sent", "Email Sent"]
 
 
+def check_gophish_file_order():
+    """4.1 runs before 4.2, so a user named by both files keeps the non-German
+    value even when the German file would have given a different one."""
+    base = pd.DataFrame({"Employee Email": ["both@x.com", "de_only@x.com"]})
+    cols = ["campaign_id", "email", "time", "message", "details"]
+    non_de = pd.DataFrame([["1", "both@x.com", "09:00", "Email Sent", "Windows"]], columns=cols)
+    de = pd.DataFrame([["2", "both@x.com", "09:00", "Submitted Data", "", "Windows"],
+                       ["2", "de_only@x.com", "09:00", "Submitted Data", "", "Windows"]],
+                      columns=cols[:4] + ["Sort", "details"])
+    final, _ = run(base, gophish=non_de, gophish_de=de, log=lambda *_: None)
+    assert list(final[COL_GOPHISH]) == ["Email Sent", "Submitted Data"], list(final[COL_GOPHISH])
+
+
 def check_lookup_fallback():
     """A real O365 export names the phisher in SenderAddress and our employee in
     RecipientAddress - matching the named column alone would report nobody."""
@@ -503,6 +532,7 @@ def selftest():
     check_outcome_pairs()
     check_lookup_fallback()
     check_mimecast_columns()
+    check_gophish_file_order()
     final, books = run(log=lambda *_: None, **fixtures())
     f = final.set_index("Employee Name")
 
@@ -539,15 +569,13 @@ def selftest():
         parts = sum(len(f) for n, f in books[book].items() if n != "gophish data")
         assert parts == len(fixtures()[src]), f"{book}: {parts} != {len(fixtures()[src])}"
 
-    # 4.2 splits only - details is column F there, so the Linux row must still
-    # be found, and no report column may change because of the German file
+    # 4.2 - details is column F there, so the Linux row must still be found, and
+    # the fill order is Submitted Data, then Clicked Link, then Email Sent
     de = books[BOOK_GOPHISH_DE]
-    assert list(de[SHEET_EXCLUDED]["email"]) == ["de4@x.com"]
-    assert list(de["clicked link"]["email"]) == ["de1@x.com"]
-    assert list(de["email sent"]["email"]) == ["de2@x.com"]   # Linux Android, kept
-    assert list(de["submitted data"]["email"]) == ["de3@x.com"]
-    without_de = run(log=lambda *_: None, **{k: v for k, v in fixtures().items() if k != "gophish_de"})[0]
-    assert without_de.equals(final), "the German file must not change the report"
+    assert list(de[SHEET_EXCLUDED]["email"]) == ["de_excluded@x.com"]
+    assert list(de["clicked link"]["email"]) == ["de_click@x.com", "de_both@x.com"]
+    assert list(de["email sent"]["email"]) == ["de_sent@x.com"]   # Linux Android, kept
+    assert list(de["submitted data"]["email"]) == ["de_sub@x.com", "de_both@x.com"]
 
     sheets = books[BOOK_GOPHISH]
     assert list(sheets[SHEET_EXCLUDED]["email"]) == ["untouched@x.com"], sheets[SHEET_EXCLUDED]
@@ -557,7 +585,12 @@ def selftest():
                "escalated": "Clicked Link",
                "opened": "Email Sent",
                "untouched": NOT_FOUND,        # its only row was excluded as Linux
-               "submitted": NOT_FOUND, "reported": NOT_FOUND}
+               "submitted": NOT_FOUND, "reported": NOT_FOUND,
+               "de_sub": "Submitted Data",    # German, filled by 4.2
+               "de_click": "Clicked Link",
+               "de_sent": "Email Sent",
+               "de_both": "Submitted Data",   # in two German sheets, this one fills first
+               "de_excluded": NOT_FOUND}      # its rows were excluded as Linux
     for name, value in want_gp.items():
         assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
 
