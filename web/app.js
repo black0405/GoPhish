@@ -143,12 +143,6 @@ function chips(counts) {
   return Object.entries(counts).map(([k, v]) => `<span class="chip">${esc(k)} · ${v}</span>`).join('') || '<span class="chip">none</span>';
 }
 
-function table(p) {
-  if (!p.rows.length) return '<div class="empty">no rows</div>';
-  return `<table><thead><tr>${p.columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-          <tbody>${p.rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-}
-
 function render(res) {
   const view = el('div', 'view');
   view.innerHTML = `
@@ -158,16 +152,8 @@ function render(res) {
     </div>
     <div class="preview-head"><span class="lab">Outcome</span></div>
     <div class="chips">${chips(res.final.outcome)}</div>
-    <div class="preview-head"><span class="lab">Phished (Yes/No)</span></div>
-    <div class="chips">${chips(res.final.phished)}</div>
-    <div class="preview-head"><span class="lab">Reported to O365</span></div>
-    <div class="chips">${chips(res.final.o365)}</div>
-    <div class="preview-head"><span class="lab">Reported to SOC</span></div>
-    <div class="chips">${chips(res.final.soc)}</div>
-    <div class="preview-head"><span class="lab">Preview — first 25 rows</span></div>
-    <div class="preview" id="prev">${table(res.preview)}</div>
-    <div class="logs">${res.log.map((l) => `<div class="logline"><span class="mk"></span>${esc(l)}</div>`).join('')}</div>
     <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>`;
+  // the pipeline log lives in the dock below, which already streamed it live
 
   $('results').replaceChildren(view);
 }

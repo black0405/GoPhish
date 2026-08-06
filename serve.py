@@ -34,7 +34,6 @@ RUNS = ROOT / "runs"
 NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress",
         "soc": "User", "false_login": "Username", "false_login_sso": "Email"}
 SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc"]
-PREVIEW_HEAD = ["Employee Name", "Employee Email", "Country", "Zone"]
 
 XLSX_MAX_ROWS = 100_000   # csv-only above this: openpyxl writes 200k rows in 118s, 100k in ~60s
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")
@@ -85,12 +84,6 @@ def summarise(df):
     vc = lambda col: {(k or "(blank)"): int(v) for k, v in df[col].value_counts().items()}
     return {"rows": int(len(df)), "outcome": vc(pr.COL_OUTCOME), "phished": vc(pr.COL_PHISHED),
             "o365": vc(pr.COL_O365), "soc": vc(pr.COL_SOC), "reported": vc(pr.COL_REPORTED)}
-
-
-def preview(df, n=25):
-    cols = [c for c in PREVIEW_HEAD if c in df.columns] + pr.NEW_COLS
-    head = df.loc[:, cols].head(n).astype(object).where(df.loc[:, cols].head(n).notna(), "")
-    return {"columns": cols, "rows": head.astype(str).values.tolist()}
 
 
 def do_run(payload, logs=None):
@@ -151,7 +144,7 @@ def do_run(payload, logs=None):
 
     return {"run": run.name, "log": logs,
             "files": [{"name": name, "url": f"/runs/{run.name}/{name}"}],
-            "final": summarise(final), "preview": preview(final)}
+            "final": summarise(final)}
 
 
 class Handler(BaseHTTPRequestHandler):

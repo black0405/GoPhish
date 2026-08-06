@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Phishing report preparation.
 
-The steps of steps.txt built so far, over the whole Userbase file:
+The steps built so far, over the whole Userbase file:
 
-    2.1  Submitted Data   false_login,     Username / Email (SSO)
-    2.2  Clicked Link     false_login_sso, Email
-    2.3  Mimecast         To (C) -> Log Type (O)
-    4.1  Reported to O365 SenderAddress (C) -> Reported (K)
-    4.2  Reported to SOC  User (C) -> reported (D)
+    1.1  Reported to O365  SenderAddress (C) -> Reported (K)
+    1.2  Reported to SOC   User (C) -> reported (D)
+    2.1  Submitted Data    false_login,     Username / Email (SSO)
+    2.2  Clicked Link      false_login_sso, Email
+    3    Mimecast          To (C) -> Log Type (O)
 
-The 2.x checks share one Outcome column and each only fills rows no earlier
-check resolved. GoPhish (3), the reconcile pass (5) and Part 2 (German) are not
-built yet - see git history for the earlier drafts.
+Steps 2 and 3 share one Outcome column and each only fills rows no earlier check
+resolved. GoPhish, the reconcile pass and the German part are not built yet -
+see git history for the earlier drafts.
 
     python phishing_report.py --base UserBase_V2.xlsx \
         --false-login "False_login_data-Q2-Submitted.xlsx" \
@@ -140,49 +140,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     def step(n, name, ok):
         log(f"{'  ' if ok else '- '}{n} {name}" + ("" if ok else " (skipped, no file)"))
 
-    # --- Part 1, step 2: outcomes, in the SOP's order. Each check only fills the
-    # rows still unresolved - the same as filtering Outcome down to Not Found
-    # before applying the next mapping - so a user matched by 2.1 keeps Submitted
-    # Data even when 2.2 and 2.3 also name them, and no later check can wipe an
-    # outcome an earlier one established. Blank is the unresolved marker while
-    # the steps run; it becomes Not Found once they are all done.
-    def set_outcome(hit, value):
-        unresolved = base[COL_OUTCOME].eq("")
-        base.loc[hit & unresolved, COL_OUTCOME] = value
-        log(f"    -> {int((hit & unresolved).sum())} set, "
-            f"{int((hit & ~unresolved).sum())} already resolved by an earlier check")
-
-    step("2.1", "Submitted Data (false_login)", false_login is not None)
-    if false_login is not None:
-        set_outcome(matched(false_login, FALSE_LOGIN_COLS), "Submitted Data")
-
-    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
-    if false_login_sso is not None:
-        set_outcome(matched(false_login_sso, FALSE_LOGIN_SSO_COLS), "Clicked Link")
-
-    # 2.3: Employee Email against To (column C), taking Log Type (column O).
-    step("2.3", "Mimecast activity", mimecast is not None)
-    if mimecast is not None:
-        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type"], 14)
-        k, v = norm(mimecast[key]), mimecast[val].astype(str).str.strip()
-        # a user usually has several Mimecast rows (sent, then opened, then
-        # clicked); keep the furthest they got rather than whichever sorted last
-        mm = pd.DataFrame({"_k": k, "_v": v, "_r": v.map(MIMECAST_SEVERITY).fillna(0)})
-        mm = mm.dropna(subset=["_k"]).sort_values("_r").drop_duplicates("_k", keep="last")
-        hit = ident["Employee Email"].map(dict(zip(mm["_k"], mm["_v"])))
-        unresolved = base[COL_OUTCOME].eq("")
-        base.loc[hit.notna() & unresolved, COL_OUTCOME] = hit[hit.notna() & unresolved]
-        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
-        log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
-            f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier check")
-
-    # Blank means the outcome sources were never supplied; once any of them was,
-    # a row nothing matched has been looked up and missed, same as the reporting
-    # columns - say Not Found rather than leaving it ambiguous.
-    if any(f is not None for f in (mimecast, false_login_sso, false_login)):
-        base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
-
-    # --- step 4: reporting. Match on Employee Email; a hit copies the report
+    # --- step 1: reporting. Match on Employee Email; a hit copies the report
     # file's own "reported" value onto the row (e.g. soc-support / o365), a miss
     # writes "Not Found". Blank still means the source file was not supplied.
     def lookup(src, col, key_names, key_idx, val_names, val_idx):
@@ -209,16 +167,58 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         hits = int(m.notna().sum())
         log(f"    matched {key} -> {val}: {hits} updated, {len(base) - hits} {NOT_FOUND.lower()}")
 
-    step("4.1", "Reported to O365", o365 is not None)
+    step("1.1", "Reported to O365", o365 is not None)
     if o365 is not None:
         lookup(o365, COL_O365, ["SenderAddress"], 2, ["Reported"], 10)
 
-    step("4.2", "Reported to SOC", soc is not None)
+    step("1.2", "Reported to SOC", soc is not None)
     if soc is not None:
         lookup(soc, COL_SOC, ["User"], 2, ["reported"], 3)
 
-    hit = lambda col: ~base[col].isin(["", NOT_FOUND])
-    base[COL_REPORTED] = (hit(COL_O365) | hit(COL_SOC)).map({True: "Yes", False: "No"})
+    hit_col = lambda col: ~base[col].isin(["", NOT_FOUND])
+    base[COL_REPORTED] = (hit_col(COL_O365) | hit_col(COL_SOC)).map({True: "Yes", False: "No"})
+
+    # --- steps 2 and 3: outcomes. Each check only fills the rows still
+    # unresolved - the same as filtering Outcome down to Not Found before
+    # applying the next mapping - so a user matched by 2.1 keeps Submitted Data
+    # even when 2.2 and 3 also name them, and no later check can wipe an outcome
+    # an earlier one established. Blank is the unresolved marker while the steps
+    # run; it becomes Not Found once they are all done.
+    def set_outcome(hit, value):
+        unresolved = base[COL_OUTCOME].eq("")
+        base.loc[hit & unresolved, COL_OUTCOME] = value
+        log(f"    -> {int((hit & unresolved).sum())} set, "
+            f"{int((hit & ~unresolved).sum())} already resolved by an earlier check")
+
+    step("2.1", "Submitted Data (false_login)", false_login is not None)
+    if false_login is not None:
+        set_outcome(matched(false_login, FALSE_LOGIN_COLS), "Submitted Data")
+
+    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
+    if false_login_sso is not None:
+        set_outcome(matched(false_login_sso, FALSE_LOGIN_SSO_COLS), "Clicked Link")
+
+    # step 3: Employee Email against To (column C), taking Log Type (column O).
+    step("3", "Mimecast activity", mimecast is not None)
+    if mimecast is not None:
+        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type"], 14)
+        k, v = norm(mimecast[key]), mimecast[val].astype(str).str.strip()
+        # a user usually has several Mimecast rows (sent, then opened, then
+        # clicked); keep the furthest they got rather than whichever sorted last
+        mm = pd.DataFrame({"_k": k, "_v": v, "_r": v.map(MIMECAST_SEVERITY).fillna(0)})
+        mm = mm.dropna(subset=["_k"]).sort_values("_r").drop_duplicates("_k", keep="last")
+        hit = ident["Employee Email"].map(dict(zip(mm["_k"], mm["_v"])))
+        unresolved = base[COL_OUTCOME].eq("")
+        base.loc[hit.notna() & unresolved, COL_OUTCOME] = hit[hit.notna() & unresolved]
+        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
+        log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
+            f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier check")
+
+    # Blank means the outcome sources were never supplied; once any of them was,
+    # a row nothing matched has been looked up and missed, same as the reporting
+    # columns - say Not Found rather than leaving it ambiguous.
+    if any(f is not None for f in (mimecast, false_login_sso, false_login)):
+        base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
 
     base[COL_PHISHED] = phished(base[COL_OUTCOME])
     return base
