@@ -62,6 +62,7 @@ MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                       # 4.1 sheets and fill order
 GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2 sheet order
 GOPHISH_DE_FILL = ["Submitted Data", "Clicked Link", "Email Sent"]    # 4.2 fill order
+GOPHISH_DEFAULT = "Email Sent"   # what GoPhish reads when neither file named the user
 SHEET_EXCLUDED = "excluded linux"
 # each GoPhish file becomes its own workbook, so the two download separately
 BOOK_GOPHISH, BOOK_GOPHISH_DE = "GoPhish_non_german", "GoPhish_german"
@@ -293,10 +294,14 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, log)
         fill_gophish(frames, GOPHISH_DE_FILL, em, message)
 
-    # blank is the unresolved marker while 4.1 and 4.2 run; whoever neither
-    # matched has been looked up and missed
+    # Blank is the unresolved marker while 4.1 and 4.2 run. Whoever neither file
+    # named still received the mail, so the leftovers read Email Sent rather than
+    # Not Found - including anyone whose only events were Linux rows that 4.1 or
+    # 4.2 excluded.
     if gophish is not None or gophish_de is not None:
-        base.loc[base[COL_GOPHISH].eq(""), COL_GOPHISH] = NOT_FOUND
+        rest = base[COL_GOPHISH].eq("")
+        base.loc[rest, COL_GOPHISH] = GOPHISH_DEFAULT
+        log(f"    {int(rest.sum())} rows matched by neither file -> {GOPHISH_DEFAULT}")
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
@@ -586,16 +591,18 @@ def selftest():
     assert list(sheets[SHEET_EXCLUDED]["email"]) == ["untouched@x.com"], sheets[SHEET_EXCLUDED]
     assert list(sheets["clicked link"]["email"]) == ["clicked@x.com", "escalated@x.com"]
     assert list(sheets["email sent"]["email"]) == ["clicked@x.com", "opened@x.com"]
+    # whoever neither file named falls through to Email Sent, never Not Found
     want_gp = {"clicked": "Clicked Link",     # in both sheets, Clicked Link runs first
                "escalated": "Clicked Link",
                "opened": "Email Sent",
-               "untouched": NOT_FOUND,        # its only row was excluded as Linux
-               "submitted": NOT_FOUND, "reported": NOT_FOUND,
+               "untouched": GOPHISH_DEFAULT,  # its only row was excluded as Linux
+               "submitted": GOPHISH_DEFAULT, "reported": GOPHISH_DEFAULT,
                "de_sub": "Submitted Data",    # German, filled by 4.2
                "de_click": "Clicked Link",
                "de_sent": "Email Sent",
                "de_both": "Submitted Data",   # in two German sheets, this one fills first
-               "de_excluded": NOT_FOUND}      # its rows were excluded as Linux
+               "de_excluded": GOPHISH_DEFAULT}  # its rows were excluded as Linux
+    assert NOT_FOUND not in set(f[COL_GOPHISH]), set(f[COL_GOPHISH])
     for name, value in want_gp.items():
         assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
 
