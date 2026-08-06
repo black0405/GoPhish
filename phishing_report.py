@@ -12,6 +12,8 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left
     5    Reconcile         Outcome User Click + Reported Yes -> Email Opened
+    6    Germany           Country (B) = Germany and Outcome still Not Found or
+                           User Click -> take that row's GoPhish value
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -312,6 +314,18 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     log(f"    User Click + Reported Yes -> Email Opened: {int(fix.sum())}")
 
+    # --- step 6: for Germany only, an Outcome still reading Not Found or User
+    # Click is replaced by that row's GoPhish value. Any other Outcome stands -
+    # a German user with Submitted Data keeps it.
+    log("  6   German rows take the GoPhish value")
+    country = col_of(base, ["Country"], 1)
+    de = base[country].astype(str).str.strip().str.casefold().eq("germany")
+    take = (de & base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
+            & ~base[COL_GOPHISH].isin(["", NOT_FOUND]))
+    base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+    log(f"    {country} = Germany: {int(de.sum())} rows, "
+        f"{int(take.sum())} taking their GoPhish value into Outcome")
+
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
     return base, books
@@ -396,18 +410,20 @@ def fixtures():
                 "SSOUPN as per AD (O365)": f"{name}@ad.x.com"}
 
     names = ["submitted", "clicked", "opened", "escalated", "reported", "untouched",
-             "clickreported", "de_sub", "de_click", "de_sent", "de_both", "de_excluded"]
+             "clickreported", "de_sub", "de_click", "de_sent", "de_both", "de_excluded",
+             "de_keep"]
     base = pd.DataFrame([base_row(n, "Germany" if n.startswith("de_") else "India") for n in names])
 
     # 2.1 matches on the Saviynt identity, 2.2 on the AD one - both must work.
-    false_login = pd.DataFrame({"Email (SSO)": ["submitted@sso.x.com"]})
+    # de_keep already has an Outcome, so step 6 must leave it alone
+    false_login = pd.DataFrame({"Email (SSO)": ["submitted@sso.x.com", "de_keep@sso.x.com"]})
     false_login_sso = pd.DataFrame({"Email": ["Clicked <CLICKED@AD.X.COM>"]})
     # "submitted" is here too and must keep Submitted Data; "escalated" has three
     # rows and must end on the furthest of them
     mimecast = pd.DataFrame({
-        "To": ["opened@x.com", "submitted@x.com", "clickreported@x.com",
+        "To": ["opened@x.com", "submitted@x.com", "clickreported@x.com", "de_click@x.com",
                "escalated@x.com", "escalated@x.com", "escalated@x.com"],
-        "Log Type": ["Email Opened", "Email Opened", "User Click",
+        "Log Type": ["Email Opened", "Email Opened", "User Click", "User Click",
                      "Email Sent", "User Click", "Email Opened"]})
     # value columns as in the real exports: O365 column K "Reported", SOC column D "reported"
     o365 = pd.DataFrame({"SenderAddress": ["reported@x.com", "clickreported@x.com"],
@@ -557,7 +573,14 @@ def selftest():
             "escalated": "User Click",      # furthest of its three Mimecast rows, no report
             "clickreported": "Email Opened",  # step 5: User Click + Reported Yes
             "reported": NOT_FOUND,          # reported it, but no outcome source names them
-            "untouched": NOT_FOUND}         # looked up by every source, matched by none
+            "untouched": NOT_FOUND,         # looked up by every source, matched by none
+            # step 6: Germany, Not Found or User Click, takes its GoPhish value
+            "de_sub": "Submitted Data",
+            "de_click": "Clicked Link",     # was User Click from Mimecast
+            "de_sent": "Email Sent",
+            "de_both": "Submitted Data",
+            "de_excluded": "Email Sent",    # GoPhish fell back to Email Sent
+            "de_keep": "Submitted Data"}    # already had an Outcome, step 6 leaves it
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 
@@ -615,7 +638,8 @@ def selftest():
                "de_click": "Clicked Link",
                "de_sent": "Email Sent",
                "de_both": "Submitted Data",   # in two German sheets, this one fills first
-               "de_excluded": GOPHISH_DEFAULT}  # its rows were excluded as Linux
+               "de_excluded": GOPHISH_DEFAULT,  # its rows were excluded as Linux
+               "de_keep": GOPHISH_DEFAULT}    # neither file names them
     assert NOT_FOUND not in set(f[COL_GOPHISH]), set(f[COL_GOPHISH])
     for name, value in want_gp.items():
         assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
