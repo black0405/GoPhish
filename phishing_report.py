@@ -14,7 +14,8 @@ The steps built so far, over the whole Userbase file:
     5    Reconcile         Outcome User Click + Reported Yes -> Email Opened
     6    Germany           Country = Germany and Outcome still Not Found or
                            User Click -> take that row's GoPhish value
-    7    Everywhere else   the same rows outside Germany -> Email Sent
+    7    Everywhere else   the same rows outside Germany -> Email Opened if they
+                           reported the mail, Email Sent if they did not
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -362,13 +363,17 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             f"{int(take.sum())} taking their GoPhish value into Outcome")
 
         # --- step 7: everywhere except Germany, an Outcome still reading Not
-        # Found or User Click becomes Email Sent. Same filter as step 6, the
-        # other side of the country split; a settled Outcome is left alone.
-        log("  7   everywhere but Germany -> Email Sent")
-        rest = ~de & unsettled()
-        base.loc[rest, COL_OUTCOME] = "Email Sent"
+        # Found or User Click is settled by whether they reported the mail -
+        # Email Opened if they did, Email Sent if they did not. Same filter as
+        # step 6, the other side of the country split; a settled Outcome stands.
+        log("  7   everywhere but Germany")
+        opened = ~de & unsettled() & base[COL_REPORTED].eq("Yes")
+        base.loc[opened, COL_OUTCOME] = "Email Opened"
+        sent = ~de & unsettled()
+        base.loc[sent, COL_OUTCOME] = "Email Sent"
         log(f"    {country} not Germany: {int((~de).sum())} rows, "
-            f"{int(rest.sum())} set to Email Sent")
+            f"{int(opened.sum())} reported -> Email Opened, "
+            f"{int(sent.sum())} not reported -> Email Sent")
 
     # Phished Yes/No is left empty on purpose - the rule for it has not been
     # specified, so the column ships blank rather than guessed at.
@@ -635,11 +640,11 @@ def selftest():
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
             "opened": "Email Opened",
-            # step 7: outside Germany, a leftover User Click or Not Found -> Email Sent
+            # step 7: outside Germany, a leftover splits on whether they reported
             "escalated": "Email Sent",      # was User Click, nobody reported it
             "clickreported": "Email Opened",  # step 5 settled it before step 7 could
-            "reported": "Email Sent",       # was Not Found
-            "untouched": "Email Sent",      # was Not Found
+            "reported": "Email Opened",     # was Not Found, but they reported it
+            "untouched": "Email Sent",      # was Not Found, no report
             # step 6: Germany, Not Found or User Click, takes its GoPhish value
             "de_sub": "Submitted Data",
             "de_click": "Clicked Link",     # was User Click from Mimecast
