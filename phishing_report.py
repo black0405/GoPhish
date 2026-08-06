@@ -148,11 +148,26 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
 
     tabs = {}
 
-    # --- Part 1, step 2: outcomes, in the SOP's order. Each check overwrites the
-    # one before it, so a user in both false-login files ends on Clicked Link.
-    # Mimecast runs first, ahead of its 2.3 number: it carries a row for every
-    # recipient, so running it last would wipe every Submitted Data and Clicked
-    # Link the two checks above just established.
+    # --- Part 1, step 2: outcomes, in the SOP's order. Each check only fills the
+    # rows still unresolved - the same as filtering Outcome down to Not Found
+    # before applying the next mapping - so a user matched by 2.1 keeps Submitted
+    # Data even when 2.2 and 2.3 also name them, and no later check can wipe an
+    # outcome an earlier one established. Blank is the unresolved marker while
+    # the steps run; it becomes Not Found once they are all done.
+    def set_outcome(hit, value):
+        unresolved = base[COL_OUTCOME].eq("")
+        base.loc[hit & unresolved, COL_OUTCOME] = value
+        log(f"    -> {int((hit & unresolved).sum())} set, "
+            f"{int((hit & ~unresolved).sum())} already resolved by an earlier check")
+
+    step("2.1", "Submitted Data (false_login)", false_login is not None)
+    if false_login is not None:
+        set_outcome(matched(false_login, FALSE_LOGIN_COLS), "Submitted Data")
+
+    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
+    if false_login_sso is not None:
+        set_outcome(matched(false_login_sso, FALSE_LOGIN_SSO_COLS), "Clicked Link")
+
     step("2.3", "Mimecast activity", mimecast is not None)
     if mimecast is not None:
         mm = mimecast.copy()
@@ -161,15 +176,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None, gophish=Non
         mm["_r"] = mm["_v"].map(MIMECAST_SEVERITY).fillna(0)
         mm = mm.dropna(subset=["_k"]).sort_values("_r").drop_duplicates("_k", keep="last")
         v = ident["Employee Email"].map(dict(zip(mm["_k"], mm["_v"])))
-        base.loc[v.notna(), COL_OUTCOME] = v[v.notna()]
-
-    step("2.1", "Submitted Data (false_login)", false_login is not None)
-    if false_login is not None:
-        base.loc[matched(false_login, FALSE_LOGIN_COLS), COL_OUTCOME] = "Submitted Data"
-
-    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
-    if false_login_sso is not None:
-        base.loc[matched(false_login_sso, FALSE_LOGIN_SSO_COLS), COL_OUTCOME] = "Clicked Link"
+        unresolved = base[COL_OUTCOME].eq("")
+        base.loc[v.notna() & unresolved, COL_OUTCOME] = v[v.notna() & unresolved]
+        log(f"    Employee Email <- To: {int(v.notna().sum())}, "
+            f"{int((v.notna() & unresolved).sum())} set")
 
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
@@ -429,12 +439,16 @@ def check_outcome_pairs():
         final, _, _ = run(base, log=lambda *_: None, **{kw: src})
         assert list(final[COL_OUTCOME]) == [NOT_FOUND], f"{kw} matched an unlisted column"
 
-    # 2.1 runs before 2.2, so a user in both files ends on 2.2's value
-    base = pd.DataFrame({"Employee Email": ["both@x.com"]})
-    final, _, _ = run(base, log=lambda *_: None,
-                      false_login=pd.DataFrame({"Username": ["both@x.com"]}),
-                      false_login_sso=pd.DataFrame({"Email": ["both@x.com"]}))
-    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
+    # each check only fills what is still unresolved, so the earliest one that
+    # matches a user wins - 2.1 over 2.2, and both over Mimecast
+    base = pd.DataFrame({"Employee Email": ["both@x.com", "clicked@x.com"]})
+    both = lambda **kw: run(base, log=lambda *_: None, **kw)[0][COL_OUTCOME].tolist()
+    fl = pd.DataFrame({"Username": ["both@x.com"]})
+    sso = pd.DataFrame({"Email": ["both@x.com", "clicked@x.com"]})
+    mm = pd.DataFrame({"To": ["both@x.com", "clicked@x.com"], "Log Type": ["Email Sent", "Email Sent"]})
+    assert both(false_login=fl, false_login_sso=sso) == ["Submitted Data", "Clicked Link"]
+    assert both(false_login=fl, false_login_sso=sso, mimecast=mm) == ["Submitted Data", "Clicked Link"]
+    assert both(mimecast=mm) == ["Email Sent", "Email Sent"]
 
 
 def check_lookup_fallback():
