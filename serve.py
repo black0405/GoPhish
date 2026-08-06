@@ -32,8 +32,10 @@ RUNS = ROOT / "runs"
 
 # key -> the column read_any looks for when the export has banner rows above the header
 NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress", "soc": "User",
-        "false_login": "Username", "false_login_sso": "Email", "gophish": "email"}
-SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc", "gophish"]
+        "false_login": "Username", "false_login_sso": "Email",
+        "gophish": "email", "gophish_de": "email"}
+SOURCES = ["base", "false_login", "false_login_sso", "mimecast", "o365", "soc",
+           "gophish", "gophish_de"]
 
 XLSX_MAX_ROWS = 100_000   # csv-only above this: openpyxl writes 200k rows in 118s, 100k in ~60s
 SID_RE = re.compile(r"[0-9a-zA-Z-]{8,64}$")

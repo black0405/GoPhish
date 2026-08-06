@@ -8,7 +8,8 @@ The steps built so far, over the whole Userbase file:
     2.1  Submitted Data    false_login,     Username / Email (SSO)
     2.2  Clicked Link      false_login_sso, Email
     3    Mimecast          To (C) -> Log Type (O)
-    4    GoPhish           email (B) -> message (D), Linux rows excluded first
+    4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
+    4.2  GoPhish German     the same split into sheets; nothing mapped from it yet
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
 check only fills rows no earlier one resolved. The reconcile pass and the German
@@ -21,6 +22,7 @@ part are not built yet - see git history for the earlier drafts.
         --o365 "User Reported-Microsoft 365Report button.xlsx" \
         --soc "User Reported SOC-Support.xlsx" \
         --gophish GoPhish_Events_non_german.xlsx \
+        --gophish-de Events_GermanOnly.xlsx \
         --out output
 
 Any source may be omitted; its step is skipped and reported as skipped.
@@ -57,8 +59,38 @@ FALSE_LOGIN_SSO_COLS = ["Email"]                    # 2.2, three pairs -> Clicke
 NOT_FOUND = "Not Found"     # what the reporting lookups write when the email matches nobody
 PHISHED_YES = {"Submitted Data", "Clicked Link"}
 MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
-GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]  # step 4, applied in this order
+GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                      # 4.1, in this order
+GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2, sheets only
 SHEET_EXCLUDED = "excluded linux"
+# details sits in a different column in the two exports: E in the non-German
+# file (campaign_id, email, time, message, details), F in the German one, which
+# has a Sort column before it. Both are found by name first.
+GOPHISH_DETAILS_IDX, GOPHISH_DE_DETAILS_IDX = 4, 5
+
+
+def gophish_split(g, events, details_idx, label, log):
+    """The Linux (non-Android) rows move out to their own sheet and take no
+    further part; what is left is split into one sheet per event value.
+
+    Returns ({sheet name: frame}, {event: frame}, email column, message series)."""
+    em = col_of(g, ["email"], 1)
+    msg = col_of(g, ["message"], 3)
+    det = col_of(g, ["details"], details_idx)
+
+    d = g[det].astype(str) if det is not None else pd.Series("", index=g.index)
+    linux = d.str.contains("linux", case=False, na=False) & ~d.str.contains("android", case=False, na=False)
+    kept = g[~linux]
+    log(f"    {det} contains linux, not android: {int(linux.sum())} rows moved to "
+        f"'{label}{SHEET_EXCLUDED}', {len(kept)} rows left")
+
+    sheets = {f"{label}{SHEET_EXCLUDED}": g[linux].copy()}
+    message = kept[msg].astype("string").str.strip()
+    frames = {}
+    for event in events:
+        frames[event] = kept[message.str.casefold() == event.casefold()]
+        sheets[f"{label}{event.lower()}"] = frames[event].copy()
+        log(f"    '{label}{event.lower()}' sheet: {len(frames[event])} rows")
+    return sheets, frames, em, message
 
 
 def norm(s):
@@ -113,7 +145,7 @@ def phished(outcome):
 
 
 def run(base, false_login=None, false_login_sso=None, mimecast=None,
-        o365=None, soc=None, gophish=None, log=print):
+        o365=None, soc=None, gophish=None, gophish_de=None, log=print):
     """Returns (report frame, {sheet name: frame}) - the report is the userbase
     with NEW_COLS filled in, the sheets are step 4's split of the GoPhish file."""
     base = base.copy()
@@ -230,33 +262,30 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # (non-Android) rows are moved out entirely, then one sheet per event - and
     # the GoPhish column is filled from those sheets in GOPHISH_EVENTS order,
     # each pass only filling rows the pass before it left unresolved.
-    step("4", "GoPhish activity", gophish is not None)
+    step("4.1", "GoPhish activity (non-German)", gophish is not None)
     if gophish is not None:
-        em = col_of(gophish, ["email"], 1)
-        msg = col_of(gophish, ["message"], 3)
-        det = col_of(gophish, ["details"], 5)
-
-        d = gophish[det].astype(str) if det is not None else pd.Series("", index=gophish.index)
-        linux = d.str.contains("linux", case=False, na=False) & ~d.str.contains("android", case=False, na=False)
-        sheets[SHEET_EXCLUDED] = gophish[linux].copy()
-        kept = gophish[~linux]
-        log(f"    {det} contains linux, not android: {int(linux.sum())} rows moved to "
-            f"'{SHEET_EXCLUDED}', {len(kept)} rows left")
-
-        message = kept[msg].astype("string").str.strip()
-        for event in GOPHISH_EVENTS:
-            frame = kept[message.str.casefold() == event.casefold()]
-            sheets[event.lower()] = frame.copy()
+        new, frames, em, message = gophish_split(
+            gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, "", log)
+        sheets.update(new)
+        for event, frame in frames.items():
             # carry the sheet's own message value, the same as the reporting lookups
             hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
             unresolved = base[COL_GOPHISH].eq("")
             base.loc[hit.notna() & unresolved, COL_GOPHISH] = hit[hit.notna() & unresolved]
-            log(f"    '{event.lower()}' sheet: {len(frame)} rows, Employee Email <- {em}: "
-                f"{int(hit.notna().sum())} matched")
+            log(f"    '{event.lower()}' -> Employee Email <- {em}: {int(hit.notna().sum())} matched")
             log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
                 f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier sheet")
 
         base.loc[base[COL_GOPHISH].eq(""), COL_GOPHISH] = NOT_FOUND
+
+    # 4.2: the German file is split the same way, into four sheets. Nothing is
+    # mapped from it yet - the German mapping has not been specified.
+    step("4.2", "GoPhish sheets (German)", gophish_de is not None)
+    if gophish_de is not None:
+        new, _, _, _ = gophish_split(
+            gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, "german ", log)
+        sheets.update(new)
+        log("    sheets only - no column is filled from the German file yet")
 
     base[COL_PHISHED] = phished(base[COL_OUTCOME])
     return base, sheets
@@ -286,6 +315,7 @@ def main(argv=None):
     ap.add_argument("--o365")
     ap.add_argument("--soc")
     ap.add_argument("--gophish", help="non-German GoPhish events")
+    ap.add_argument("--gophish-de", help="German GoPhish events (sheets only)")
     ap.add_argument("--out", default="output")
     ap.add_argument("--no-xlsx", action="store_true", help="CSV only - much faster on big files")
     ap.add_argument("--selftest", action="store_true")
@@ -308,6 +338,7 @@ def main(argv=None):
         o365=read_any(a.o365, "SenderAddress") if a.o365 else None,
         soc=read_any(a.soc, "User") if a.soc else None,
         gophish=read_any(a.gophish, "email") if a.gophish else None,
+        gophish_de=read_any(a.gophish_de, "email") if a.gophish_de else None,
     )
     print(f"base file: {len(src['base'])} rows")
     final, sheets = run(**src)
@@ -352,16 +383,24 @@ def fixtures():
     soc = pd.DataFrame({"User": ["reported@x.com"], "reported": ["soc-support"]})
     # "clicked" is in both event sheets and must take the Clicked Link pass;
     # "penguin" is Linux without Android and must be excluded before any mapping
+    # column order per "files & column.txt": no Sort column in the non-German file
     gophish = pd.DataFrame({
         "campaign_id": ["1"] * 5,
         "email": ["clicked@x.com", "clicked@x.com", "opened@x.com", "escalated@x.com", "untouched@x.com"],
         "time": ["09:00"] * 5,
         "message": ["Clicked Link", "Email Sent", "Email Sent", "Clicked Link", "Clicked Link"],
-        "Sort": [""] * 5,
         "details": ["Windows", "Windows", "Linux Android", "Windows", "Linux x86_64"]})
+    # the German export has a Sort column, so details lands one column further right
+    gophish_de = pd.DataFrame({
+        "campaign_id": ["2"] * 4,
+        "email": ["de1@x.com", "de2@x.com", "de3@x.com", "de4@x.com"],
+        "time": ["09:00"] * 4,
+        "message": ["Clicked Link", "Email Sent", "Submitted Data", "Submitted Data"],
+        "Sort": [""] * 4,
+        "details": ["Windows", "Linux Android", "Windows", "Linux x86_64"]})
 
     return dict(base=base, false_login=false_login, false_login_sso=false_login_sso,
-                mimecast=mimecast, o365=o365, soc=soc, gophish=gophish)
+                mimecast=mimecast, o365=o365, soc=soc, gophish=gophish, gophish_de=gophish_de)
 
 
 def write_samples(out):
@@ -483,7 +522,17 @@ def selftest():
 
     # step 4: the Linux (non-Android) row is moved out and never mapped, the
     # Clicked Link pass runs before Email Sent, the rest say Not Found
-    assert list(sheets) == [SHEET_EXCLUDED, "clicked link", "email sent"], list(sheets)
+    assert list(sheets) == [SHEET_EXCLUDED, "clicked link", "email sent",
+                            "german " + SHEET_EXCLUDED, "german clicked link",
+                            "german email sent", "german submitted data"], list(sheets)
+    # 4.2 splits only - details is column F there, so the Linux row must still
+    # be found, and no report column may change because of the German file
+    assert list(sheets["german " + SHEET_EXCLUDED]["email"]) == ["de4@x.com"]
+    assert list(sheets["german clicked link"]["email"]) == ["de1@x.com"]
+    assert list(sheets["german email sent"]["email"]) == ["de2@x.com"]   # Linux Android, kept
+    assert list(sheets["german submitted data"]["email"]) == ["de3@x.com"]
+    without_de = run(log=lambda *_: None, **{k: v for k, v in fixtures().items() if k != "gophish_de"})[0]
+    assert without_de.equals(final), "the German file must not change the report"
     assert list(sheets[SHEET_EXCLUDED]["email"]) == ["untouched@x.com"], sheets[SHEET_EXCLUDED]
     assert list(sheets["clicked link"]["email"]) == ["clicked@x.com", "escalated@x.com"]
     assert list(sheets["email sent"]["email"]) == ["clicked@x.com", "opened@x.com"]
