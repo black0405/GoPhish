@@ -11,11 +11,11 @@ The steps built so far, over the whole Userbase file:
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left
-    5    Reconcile         Outcome User Click + Reported Yes -> Email Opened
+    5    Reconcile         Outcome User Click or Not Found, and Reported Yes
+                           -> Email Opened
     6    Germany           Country = Germany and Outcome still Not Found or
                            User Click -> take that row's GoPhish value
-    7    Everywhere else   the same rows outside Germany -> Email Opened if they
-                           reported the mail, Email Sent if they did not
+    7    Everywhere else   the same rows outside Germany -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -333,12 +333,13 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # them clicking the report button, not the phish. Runs last: it needs the
     # Outcome from steps 2-3 and Reported (Yes/No) from step 1.
     log("  5   reconcile Outcome")
-    click = base[COL_OUTCOME].eq("User Click")
+    unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
+    open_ = unsettled()
     yes = base[COL_REPORTED].eq("Yes")
-    fix = click & yes
+    fix = open_ & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     # both counts, so a zero result says which half of the rule was empty
-    log(f"    User Click: {int(click.sum())}, Reported Yes: {int(yes.sum())}, "
+    log(f"    User Click or {NOT_FOUND}: {int(open_.sum())}, Reported Yes: {int(yes.sum())}, "
         f"both -> Email Opened: {int(fix.sum())}")
     # and what the reported rows actually say, quoted, so a value that only looks
     # like "User Click" is visible rather than leaving the rule looking broken
@@ -354,7 +355,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # By name only. The generated columns are appended to the base, so a
     # positional fallback here could land on one of those rather than column B.
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     if country is None:
         log("    ! base file has no Country column - steps 6 and 7 skipped")
     else:
@@ -365,17 +365,14 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             f"{int(take.sum())} taking their GoPhish value into Outcome")
 
         # --- step 7: everywhere except Germany, an Outcome still reading Not
-        # Found or User Click is settled by whether they reported the mail -
-        # Email Opened if they did, Email Sent if they did not. Same filter as
-        # step 6, the other side of the country split; a settled Outcome stands.
-        log("  7   everywhere but Germany")
-        opened = ~de & unsettled() & base[COL_REPORTED].eq("Yes")
-        base.loc[opened, COL_OUTCOME] = "Email Opened"
+        # Found or User Click becomes Email Sent. Anyone here who reported the
+        # mail was already lifted to Email Opened by step 5, so what is left is
+        # the unreported. Same filter as step 6, the other side of the split.
+        log("  7   everywhere but Germany -> Email Sent")
         sent = ~de & unsettled()
         base.loc[sent, COL_OUTCOME] = "Email Sent"
         log(f"    {country} not Germany: {int((~de).sum())} rows, "
-            f"{int(opened.sum())} reported -> Email Opened, "
-            f"{int(sent.sum())} not reported -> Email Sent")
+            f"{int(sent.sum())} set to Email Sent")
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
     # acted on the phish, No for every other settled outcome. A row whose Outcome
@@ -625,6 +622,19 @@ def check_step5_spelling():
     # every spelling counts as a click - case, doubled space, non-breaking space,
     # no space at all. The fourth did not report it, so it stays a click.
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["User Click"], list(final[COL_OUTCOME])
+
+    # step 5 covers Not Found as well as User Click, and runs before the country
+    # split, so a reported German row is Email Opened rather than taking its
+    # GoPhish value in step 6
+    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"], "Country": ["Germany"] * 2})
+    gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
+                       "time": ["09:00"] * 2, "message": ["Clicked Link"] * 2,
+                       "details": ["Windows"] * 2})
+    o365 = pd.DataFrame({"SenderAddress": ["a@x.com"], "Reported": ["o365"]})
+    # an outcome source has to exist for a miss to read Not Found rather than blank
+    none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
+    final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Opened", "Clicked Link"], list(final[COL_OUTCOME])
 
     # a base with no Country column must not fall back onto a generated one
     said = []
