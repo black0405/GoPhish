@@ -568,6 +568,11 @@ def selftest():
     for book, src in ((BOOK_GOPHISH, "gophish"), (BOOK_GOPHISH_DE, "gophish_de")):
         parts = sum(len(f) for n, f in books[book].items() if n != "gophish data")
         assert parts == len(fixtures()[src]), f"{book}: {parts} != {len(fixtures()[src])}"
+        # the sheets are the export's own columns; the mapping belongs to the
+        # report, so no workbook sheet may carry a GoPhish column of its own
+        for name, frame in books[book].items():
+            assert list(frame.columns) == list(fixtures()[src].columns), f"{book}/{name}"
+            assert COL_GOPHISH not in frame.columns, f"{book}/{name} has a {COL_GOPHISH} column"
 
     # 4.2 - details is column F there, so the Linux row must still be found, and
     # the fill order is Submitted Data, then Clicked Link, then Email Sent
