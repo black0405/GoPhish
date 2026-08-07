@@ -46,7 +46,16 @@ def git_rev():
                     return line.split()[0][:7]
         return head[:7]
     except Exception:
-        return "?"
+        # a zip download has no .git - fingerprint the code itself instead.
+        # \r stripped so the same code hashes the same on every line-ending.
+        import hashlib
+        h = hashlib.sha1()
+        try:
+            for p in ("phishing_report.py", "serve.py"):
+                h.update((ROOT / p).read_bytes().replace(b"\r", b""))
+            return "zip-" + h.hexdigest()[:7]
+        except Exception:
+            return "?"
 
 
 REV = git_rev()
