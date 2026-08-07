@@ -350,16 +350,15 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     if mimecast is not None:
         key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
         k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
-        # a user usually has several Mimecast rows (sent, then opened, then
-        # clicked); keep the furthest they got rather than whichever sorted last
-        mm = pd.DataFrame({"_k": k, "_v": v, "_r": v.map(MIMECAST_SEVERITY).fillna(0)})
-        mm = mm.dropna(subset=["_k"]).sort_values("_r").drop_duplicates("_k", keep="last")
-        hit = ident["Employee Email"].map(dict(zip(mm["_k"], mm["_v"])))
-        unresolved = base[COL_OUTCOME].eq("")
-        base.loc[hit.notna() & unresolved, COL_OUTCOME] = hit[hit.notna() & unresolved]
+        # XLOOKUP semantics: a user with several Mimecast rows takes the FIRST
+        # row in the file, not the strongest event
+        ok = k.notna()
+        hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
+        fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
+        base.loc[fill, COL_OUTCOME] = hit[fill]
         log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
-        log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
-            f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier check")
+        log(f"    -> {int(fill.sum())} set, "
+            f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
 
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
@@ -591,8 +590,9 @@ def fixtures():
                                 "Outcome": ["Submitted Data", "Submitted Data"]})
     false_login_sso = pd.DataFrame({"Email": ["Clicked <CLICKED@AD.X.COM>"],
                                     "Outcome": ["Clicked Link"]})
-    # "submitted" is here too and must keep Submitted Data; "escalated" has three
-    # rows and must end on the furthest of them
+    # "submitted" is here too and must keep Submitted Data; "escalated" has
+    # three rows - XLOOKUP takes the first (Email Sent), but their GoPhish
+    # clicked link event already settled them in step 4 anyway
     # de_mimeboth has both a GoPhish event and a Mimecast row: step 4 runs
     # first, so the GoPhish value must win and Mimecast must not touch them
     mimecast = pd.DataFrame({
@@ -795,6 +795,11 @@ def check_mimecast_columns():
     wide = {chr(65 + i): [""] for i in range(15)}       # 15 columns, A..O
     wide["C"], wide["N"] = ["A@X.COM"], ["Email Opened"]  # position 2 and 13
     final, _ = run(base, mimecast=pd.DataFrame(wide), log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
+
+    # XLOOKUP semantics: the first row for a user wins, not the strongest event
+    mm = pd.DataFrame({"To": ["a@x.com", "a@x.com"], "Log Type": ["Email Opened", "User Click"]})
+    final, _ = run(base, mimecast=mm, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
 
 
