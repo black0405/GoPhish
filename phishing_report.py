@@ -7,17 +7,17 @@ The steps built so far, over the whole Userbase file:
     1.2  Reported to SOC   User (C) -> reported (D)
     2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G)
     2.2  false_login_sso   Email (D) -> its Outcome (G)
-    4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
+    4.1  GoPhish           email (B) -> message (D), Linux rows excluded first;
+                           also copies its value into Outcome, no country filter
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
-                           Link, Email Sent order over what 4.1 left; ALSO
-                           copies its value into Outcome for rows step 2 left
+                           Link, Email Sent order over what 4.1 left; also
+                           copies its value into Outcome
     3    Mimecast          To (C) -> Log Type (O), after step 4 - it only
-                           fills rows GoPhish German left empty
+                           fills rows the GoPhish files left empty
     5    Reconcile         Outcome User Click or Not Found, and Reported Yes
                            -> Email Opened
-    6    Germany           Country = Germany and Outcome still Not Found or
-                           User Click -> take that row's GoPhish value
-    7    Everywhere else   the same rows outside Germany -> Email Sent
+    6    Leftovers         Outcome still Not Found or User Click -> that row's
+                           GoPhish value, else Email Sent - no country filter
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -275,9 +275,9 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # --- step 4: GoPhish - runs BEFORE Mimecast. The events file is split into
     # sheets first - the Linux (non-Android) rows are moved out entirely, then
     # one sheet per event - and the GoPhish column is filled from those sheets,
-    # each pass only filling rows the pass before it left unresolved. The German
-    # file also copies its value into Outcome for rows step 2 left empty, so a
-    # German user with a GoPhish event is settled before Mimecast can touch them.
+    # each pass only filling rows the pass before it left unresolved. BOTH files
+    # also copy their value into Outcome for rows step 2 left empty - no country
+    # filter - so any user with a GoPhish event is settled before Mimecast.
     def fill_gophish(frames, order, em, message, into_outcome=False):
         """Each sheet in turn, filling only the rows still unresolved - the same
         filter-to-Not-Found-then-map shape the Outcome steps use. The value
@@ -295,16 +295,15 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
                 base.loc[open_o, COL_OUTCOME] = hit[open_o]
                 log(f"    -> Outcome: {int(open_o.sum())} set")
 
-    step("4.1", "GoPhish activity (non-German)", gophish is not None)
+    step("4.1", "GoPhish activity (non-German, fills Outcome too)", gophish is not None)
     if gophish is not None:
         books[BOOK_GOPHISH], frames, em, message = gophish_split(
             gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
-        fill_gophish(frames, GOPHISH_EVENTS, em, message)
+        fill_gophish(frames, GOPHISH_EVENTS, em, message, into_outcome=True)
 
     # 4.2: the German file is split the same way but into four sheets, and fills
     # in a different order - Submitted Data first, then Clicked Link, then Email
-    # Sent - over the rows 4.1 left unresolved. This is the file that also
-    # writes Outcome.
+    # Sent - over the rows 4.1 left unresolved.
     step("4.2", "GoPhish activity (German, fills Outcome too)", gophish_de is not None)
     if gophish_de is not None:
         books[BOOK_GOPHISH_DE], frames, em, message = gophish_split(
@@ -341,7 +340,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
     # columns - say Not Found rather than leaving it ambiguous.
-    if any(f is not None for f in (mimecast, false_login_sso, false_login, gophish_de)):
+    if any(f is not None for f in (mimecast, false_login_sso, false_login, gophish, gophish_de)):
         base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
     snap("Step3_Mimecast", base)
 
@@ -365,42 +364,26 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             + ", ".join(f"{v!r} ({n})" for v, n in seen.items()))
     snap("Step5_Reconcile", base)
 
-    # --- step 6: for Germany only, an Outcome still reading Not Found or User
-    # Click is replaced by that row's GoPhish value. Any other Outcome stands -
-    # a German user with Submitted Data keeps it.
-    log("  6   German rows take the GoPhish value")
-    # By name only. The generated columns are appended to the base, so a
-    # positional fallback here could land on one of those rather than column B.
-    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    if country is None:
-        log("    ! base file has no Country column - steps 6 and 7 skipped")
-    else:
-        de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-        take = de & unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
-        base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
-        log(f"    {country} = Germany: {int(de.sum())} rows, "
-            f"{int(take.sum())} taking their GoPhish value into Outcome")
-        snap("Step6_Germany", base)
-
-        # --- step 7: everywhere except Germany, an Outcome still reading Not
-        # Found or User Click becomes Email Sent. Anyone here who reported the
-        # mail was already lifted to Email Opened by step 5, so what is left is
-        # the unreported. Same filter as step 6, the other side of the split.
-        log("  7   everywhere but Germany -> Email Sent")
-        sent = ~de & unsettled()
-        base.loc[sent, COL_OUTCOME] = "Email Sent"
-        log(f"    {country} not Germany: {int((~de).sum())} rows, "
-            f"{int(sent.sum())} set to Email Sent")
-        snap("Step7_OutsideGermany", base)
+    # --- step 6: any Outcome still reading Not Found or User Click takes that
+    # row's GoPhish value - no country filter. Whoever has no GoPhish value
+    # either falls back to Email Sent; anyone who reported the mail was already
+    # lifted to Email Opened by step 5, so what is left is the unreported.
+    log("  6   leftover Outcome takes the GoPhish value, else Email Sent")
+    take = unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
+    base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+    sent = unsettled()
+    base.loc[sent, COL_OUTCOME] = "Email Sent"
+    log(f"    {int(take.sum())} took their GoPhish value, {int(sent.sum())} -> Email Sent")
+    snap("Step6_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
     # acted on the phish, No for every other settled outcome. A row whose Outcome
     # is still blank had no outcome source at all, so it stays blank too.
     log("  8   Phished Yes/No")
     left = base[COL_OUTCOME].eq(NOT_FOUND)
-    if left.any():   # steps 6 and 7 should have settled all of these
+    if left.any():   # step 6 should have settled all of these
         log(f"    ! {int(left.sum())} rows still read {NOT_FOUND} in Outcome - "
-            "they count as No; check step 6 and 7's country filter")
+            "they count as No; check step 6")
     known = base[COL_OUTCOME].ne("")
     base.loc[known, COL_PHISHED] = (base.loc[known, COL_OUTCOME]
                                     .isin(PHISHED_YES).map({True: "Yes", False: "No"}))
@@ -669,13 +652,14 @@ def check_outcome_pairs():
                                     for c in cols})
                 final, _ = run(base, log=lambda *_: None, **{kw: src})
                 where = f"{kw}: {bcol} <- {scol}"
-                assert list(final[COL_OUTCOME]) == [outcome, NOT_FOUND], f"{where}: {list(final[COL_OUTCOME])}"
+                # the miss settles to Email Sent via the step 6 fallback
+                assert list(final[COL_OUTCOME]) == [outcome, "Email Sent"], f"{where}: {list(final[COL_OUTCOME])}"
 
         # the same identity in a column the table does not list must not match
         base = pd.DataFrame({"Employee Email": ["hit@x.com"]})
         src = pd.DataFrame({"Some Other Column": ["hit@x.com"], **{c: ["other@x.com"] for c in cols}})
         final, _ = run(base, log=lambda *_: None, **{kw: src})
-        assert list(final[COL_OUTCOME]) == [NOT_FOUND], f"{kw} matched an unlisted column"
+        assert list(final[COL_OUTCOME]) == ["Email Sent"], f"{kw} matched an unlisted column"
 
     # each check only fills what is still unresolved, so the earliest one that
     # matches a user wins - 2.1 over 2.2, and both over Mimecast
@@ -745,35 +729,29 @@ def check_step5_spelling():
     mm["Log Type"] = ["User Click", "user  click", "User Click", "USERCLICK"]
     final, _ = run(base, mimecast=mm, o365=o365, log=lambda *_: None)
     # every spelling counts as a click - case, doubled space, non-breaking space,
-    # no space at all. The fourth did not report it, so it stays a click.
-    assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["User Click"], list(final[COL_OUTCOME])
+    # no space at all. The fourth did not report it, so step 6 settles it to
+    # Email Sent (no GoPhish value to take).
+    assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # step 5 covers Not Found as well as User Click, and runs before the country
-    # split, so a reported German row is Email Opened rather than taking its
-    # GoPhish value in step 6
-    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"], "Country": ["Germany"] * 2})
+    # a GoPhish event settles Outcome in step 4, before Mimecast and before the
+    # step 5 report-downgrade - real click evidence beats the report
+    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"]})
     gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
                        "time": ["09:00"] * 2, "message": ["Clicked Link"] * 2,
                        "details": ["Windows"] * 2})
     o365 = pd.DataFrame({"SenderAddress": ["a@x.com"], "Reported": ["o365"]})
-    # an outcome source has to exist for a miss to read Not Found rather than blank
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
     final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Opened", "Clicked Link"], list(final[COL_OUTCOME])
-
-    # a base with no Country column must not fall back onto a generated one
-    said = []
-    run(pd.DataFrame({"Employee Email": ["a@x.com"]}), mimecast=mm, log=said.append)
-    assert any("no Country column" in s for s in said), said
+    assert list(final[COL_OUTCOME]) == ["Clicked Link", "Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
     """2.3 finds To and Log Type by position (C and O) when the headers differ."""
     base = pd.DataFrame({"Employee Email": ["a@x.com"]})
     wide = {chr(65 + i): [""] for i in range(15)}       # 15 columns, A..O
-    wide["C"], wide["O"] = ["A@X.COM"], ["User Click"]  # position 2 and 14
+    wide["C"], wide["O"] = ["A@X.COM"], ["Email Opened"]  # position 2 and 14
     final, _ = run(base, mimecast=pd.DataFrame(wide), log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["User Click"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
 
 
 def selftest():
@@ -787,27 +765,24 @@ def selftest():
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
     assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step4_GoPhish", "Step3_Mimecast",
-                     "Step5_Reconcile", "Step6_Germany", "Step7_OutsideGermany"], snaps
+                     "Step5_Reconcile", "Step6_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
-    want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite
+    want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
-            "opened": "Email Opened",
-            # step 7: outside Germany, a leftover splits on whether they reported
-            "escalated": "Email Sent",      # was User Click, nobody reported it
-            "clickreported": "Email Opened",  # step 5 settled it before step 7 could
+            # both files fill Outcome before Mimecast, no country filter
+            "opened": "Email Sent",         # 4.1 email sent sheet beat the Mimecast row
+            "escalated": "Clicked Link",    # 4.1 clicked link sheet beat the User Click
+            "clickreported": "Email Opened",  # only in Mimecast; step 5 lifted the click
             "reported": "Email Opened",     # was Not Found, but they reported it
-            "untouched": "Email Sent",      # was Not Found, no report
-            # step 6: Germany, Not Found or User Click, takes its GoPhish value
+            "untouched": "Email Sent",      # was Not Found, no report -> step 6 fallback
             "de_sub": "Submitted Data",
-            "de_click": "Clicked Link",     # was User Click from Mimecast
+            "de_click": "Clicked Link",
             "de_sent": "Email Sent",
             "de_both": "Submitted Data",
             "de_excluded": "Email Sent",    # GoPhish fell back to Email Sent
-            "de_keep": "Submitted Data",    # already had an Outcome, step 6 leaves it
-            # step 4 runs before Mimecast, so the GoPhish Email Sent lands first
-            # and the Mimecast Email Opened row never gets to fill Outcome
-            "de_mimeboth": "Email Sent"}
+            "de_keep": "Submitted Data",    # already had an Outcome from step 2
+            "de_mimeboth": "Email Sent"}    # GoPhish Email Sent beat Mimecast Email Opened
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 
