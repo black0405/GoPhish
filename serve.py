@@ -32,11 +32,19 @@ RUNS = ROOT / "runs"
 
 
 def git_rev():
-    """Short commit hash, so the page can show which code the server runs."""
+    """Short commit hash, read straight out of .git - no git binary needed.
+    '?' means the folder is not a git checkout at all (copied as a zip?)."""
     try:
-        import subprocess
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
-                              capture_output=True, text=True, timeout=5).stdout.strip() or "?"
+        head = (ROOT / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = head.split(None, 1)[1]
+            p = ROOT / ".git" / ref
+            if p.is_file():
+                return p.read_text().strip()[:7]
+            for line in (ROOT / ".git" / "packed-refs").read_text().splitlines():
+                if line.strip().endswith(ref):
+                    return line.split()[0][:7]
+        return head[:7]
     except Exception:
         return "?"
 
