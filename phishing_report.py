@@ -8,10 +8,11 @@ The steps built so far, over the whole Userbase file:
     2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G)
     2.2  false_login_sso   Email (D) -> its Outcome (G)
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first;
-                           also copies its value into Outcome, no country filter
+                           Submitted Data / Clicked Link rows also copy into
+                           Outcome, no country filter - Email Sent does not
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
-                           Link, Email Sent order over what 4.1 left; also
-                           copies its value into Outcome
+                           Link, Email Sent order over what 4.1 left; same
+                           Outcome rule
     3    Mimecast          To (C) -> Log Type (O), after step 4 - it only
                            fills rows the GoPhish files left empty
     5    Reconcile         Outcome User Click or Not Found, and Reported Yes
@@ -290,7 +291,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             log(f"    '{event.lower()}' -> Employee Email <- {em}: {int(hit.notna().sum())} matched")
             log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
                 f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier sheet")
-            if into_outcome:
+            # only the events that mean the user acted go into Outcome; an
+            # Email Sent event proves nothing beyond delivery, so the row stays
+            # open for Mimecast (Email Opened etc.) and the step 6 fallback
+            if into_outcome and event != GOPHISH_DEFAULT:
                 open_o = hit.notna() & base[COL_OUTCOME].eq("")
                 base.loc[open_o, COL_OUTCOME] = hit[open_o]
                 log(f"    -> Outcome: {int(open_o.sum())} set")
@@ -770,8 +774,10 @@ def selftest():
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
-            # both files fill Outcome before Mimecast, no country filter
-            "opened": "Email Sent",         # 4.1 email sent sheet beat the Mimecast row
+            # both files fill Outcome before Mimecast, no country filter - but
+            # only their Submitted Data / Clicked Link events; Email Sent stays
+            # open so Mimecast can still say Email Opened
+            "opened": "Email Opened",       # GoPhish only had Email Sent; Mimecast filled
             "escalated": "Clicked Link",    # 4.1 clicked link sheet beat the User Click
             "clickreported": "Email Opened",  # only in Mimecast; step 5 lifted the click
             "reported": "Email Opened",     # was Not Found, but they reported it
@@ -782,7 +788,7 @@ def selftest():
             "de_both": "Submitted Data",
             "de_excluded": "Email Sent",    # GoPhish fell back to Email Sent
             "de_keep": "Submitted Data",    # already had an Outcome from step 2
-            "de_mimeboth": "Email Sent"}    # GoPhish Email Sent beat Mimecast Email Opened
+            "de_mimeboth": "Email Opened"}  # GoPhish Email Sent left it open; Mimecast filled
     for name, outcome in want.items():
         assert f.loc[name, COL_OUTCOME] == outcome, f"{name}: {f.loc[name, COL_OUTCOME]!r} != {outcome!r}"
 
