@@ -15,8 +15,8 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left; GoPhish
                            column only, no country filter anywhere
-    5    Germany           Country = Germany rows still Not Found or User Click
-                           -> that row's GoPhish value (before the lift)
+    5    Submitted         leftover (Not Found / User Click) whose GoPhish says
+                           Submitted Data takes it - beats the reported lift
     6    Reported          leftover + Reported Yes -> Email Opened
     7    Leftovers         the rest take their GoPhish value, any country;
                            whoever has none -> Email Sent
@@ -356,29 +356,21 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
 
     # The tail: a leftover is a row whose Outcome still reads Not Found or User
     # Click. Order matters and each pass only touches what is still left:
-    #   5. Germany leftovers take their GoPhish value - BEFORE the reported
-    #      lift, so a German submitter who also clicked report keeps Submitted
-    #      Data rather than Email Opened.
+    #   5. A GoPhish Submitted Data is definitive - it wins even over the
+    #      reported lift (they submitted, then reported). Any country.
     #   6. Reported leftovers lift to Email Opened - clicking the report button
-    #      is what a Mimecast User Click usually was.
+    #      is what a Mimecast User Click usually was, and a GoPhish Clicked
+    #      Link from a reporter falls under the same doubt.
     #   7. Remaining leftovers take their GoPhish value, any country; whoever
     #      has none becomes Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
-    log("  5   Germany leftovers take the GoPhish value")
-    # Country by name only - the generated columns are appended to the base, so
-    # a positional fallback could land on one of those instead of column B
-    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    if country is None:
-        de = pd.Series(False, index=base.index)
-        log("    ! base has no Country column - the Germany pass touches no row")
-    else:
-        de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-    take = de & unsettled() & gp_val()
+    log("  5   leftovers with GoPhish Submitted Data take it")
+    take = unsettled() & base[COL_GOPHISH].eq("Submitted Data")
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
-    log(f"    Germany rows: {int(de.sum())}, {int(take.sum())} took their GoPhish value")
-    snap("Step5_Germany", base)
+    log(f"    {int(take.sum())} took Submitted Data")
+    snap("Step5_Submitted", base)
 
     log("  6   reported leftovers -> Email Opened")
     yes = base[COL_REPORTED].eq("Yes")
@@ -756,17 +748,17 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # the Germany pass runs before the reported lift: a reported German row
-    # with a GoPhish value keeps that value, not Email Opened
+    # a GoPhish Submitted Data beats the reported lift; a GoPhish Clicked Link
+    # does not - a reporter's click is doubted, their submit is not
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"],
                          "Country": ["Germany", "Germany"]})
-    gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
-                       "time": ["09:00"] * 2, "message": ["Clicked Link"] * 2,
-                       "details": ["Windows"] * 2})
-    o365 = pd.DataFrame({"SenderAddress": ["a@x.com"], "Reported": ["o365"]})
+    de_gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
+                          "time": ["09:00"] * 2, "message": ["Submitted Data", "Clicked Link"],
+                          "Sort": ["", ""], "details": ["Windows"] * 2})
+    o365 = pd.DataFrame({"SenderAddress": ["a@x.com", "b@x.com"], "Reported": ["o365", "o365"]})
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
-    final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Clicked Link", "Clicked Link"], list(final[COL_OUTCOME])
+    final, _ = run(base, gophish_de=de_gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Submitted Data", "Email Opened"], list(final[COL_OUTCOME])
 
     # step 7: a non-German unreported User Click takes its GoPhish value too
     base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
@@ -802,7 +794,7 @@ def selftest():
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
     assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
-                     "Step5_Germany", "Step6_Reported", "Step7_Leftovers"], snaps
+                     "Step5_Submitted", "Step6_Reported", "Step7_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
