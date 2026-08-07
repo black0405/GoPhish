@@ -7,9 +7,9 @@ const SOURCES = [
   ['soc',         'User Reported — SOC',    'User (C) → reported (D)'],
   ['false_login', 'False login — Submitted', 'Username / Email (SSO) → its Outcome (G)'],
   ['false_login_sso', 'False login SSO — Clicked', 'Email → its Outcome (G)'],
-  ['mimecast', 'Mimecast activity', 'To (C) → Log Type (O)'],
-  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), Linux excluded'],
-  ['gophish_de', 'GoPhish events — German', 'submitted data, then clicked link, then email sent'],
+  ['mimecast', 'Mimecast activity', 'To (C) → Log Type (N)'],
+  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), Country ≠ Germany only'],
+  ['gophish_de', 'GoPhish events — German', 'Country = Germany only; submitted, clicked, sent order'],
 ];
 
 let sid = crypto.randomUUID();
