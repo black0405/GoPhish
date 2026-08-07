@@ -213,7 +213,12 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         key, val = col_of(src, key_names, key_idx), col_of(src, val_names, val_idx)
         vals = src[val].astype("string").str.strip() if val is not None else pd.Series("", index=src.index)
         vals = vals.where(vals.notna() & vals.ne(""), col)   # matched but blank -> the column name
-        against = lambda c: ident["Employee Email"].map(dict(zip(norm(src[c]), vals)))
+
+        def against(c):
+            k = norm(src[c])
+            ok = k.notna()
+            # XLOOKUP semantics: the first row for a user wins
+            return ident["Employee Email"].map(dict(zip(k[ok][::-1], vals[ok][::-1])))
 
         m = against(key)
         if not m.notna().any():
@@ -307,7 +312,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         written is the sheet's own message, not a constant."""
         for event in order:
             frame = frames[event]
-            hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
+            k, v = norm(frame[em]), message[frame.index]
+            ok = k.notna()
+            # XLOOKUP semantics: the first row for a user wins
+            hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
             unresolved = base[COL_GOPHISH].eq("")
             base.loc[hit.notna() & unresolved, COL_GOPHISH] = hit[hit.notna() & unresolved]
             log(f"    '{event.lower()}' -> Employee Email <- {em}: {int(hit.notna().sum())} matched")
@@ -588,9 +596,10 @@ def fixtures():
                "escalated@x.com", "escalated@x.com", "escalated@x.com", "de_mimeboth@x.com"],
         "Log Type": ["Email Opened", "Email Opened", "User Click", "User Click",
                      "Email Sent", "User Click", "Email Opened", "Email Opened"]})
-    # value columns as in the real exports: O365 column K "Reported", SOC column D "reported"
-    o365 = pd.DataFrame({"SenderAddress": ["reported@x.com", "clickreported@x.com"],
-                         "Reported": ["o365", "o365"]})
+    # value columns as in the real exports: O365 column K "Reported", SOC column
+    # D "reported". The duplicate row pins XLOOKUP: the first row must win.
+    o365 = pd.DataFrame({"SenderAddress": ["reported@x.com", "clickreported@x.com", "reported@x.com"],
+                         "Reported": ["o365", "o365", "second-row-must-lose"]})
     soc = pd.DataFrame({"User": ["reported@x.com"], "reported": ["soc-support"]})
     # "clicked" is in both event sheets and must take the Clicked Link pass;
     # "penguin" is Linux without Android and must be excluded before any mapping
