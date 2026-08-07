@@ -241,7 +241,9 @@ def compare(sess):
         any_diff |= diff
         cols[c] = int(diff.sum())
 
-    keep = [key] + [x for c in pairs for x in (c, f"yours::{c}")]
+    # Country rides along so a mismatch pattern that splits on it is visible
+    extra = [c for c in mine.columns if str(c).strip().casefold() == "country"][:1]
+    keep = [key] + extra + [x for c in pairs for x in (c, f"yours::{c}")]
     mism = merged.loc[any_diff, keep].rename(columns={f"yours::{c}": f"{c} (yours)" for c in pairs})
     name = "Compare_Mismatches.csv"
     mism.to_csv(sess["dir"] / name, index=False)
