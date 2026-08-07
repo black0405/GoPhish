@@ -174,10 +174,14 @@ def read_any(path, need=None):
 
 
 def run(base, false_login=None, false_login_sso=None, mimecast=None,
-        o365=None, soc=None, gophish=None, gophish_de=None, log=print):
+        o365=None, soc=None, gophish=None, gophish_de=None, log=print, snap=None):
     """Returns (report frame, {workbook stem: {sheet name: frame}}) - the report
     is the userbase with NEW_COLS filled in, and each GoPhish file supplied gets
-    a workbook of its own holding step 4's split of it."""
+    a workbook of its own holding step 4's split of it.
+
+    `snap(name, frame)`, when given, is called with the report as it stands
+    after each step, so the caller can save per-step files for checking."""
+    snap = snap or (lambda *_: None)
     base = base.copy()
     books = {}
     for c in NEW_COLS:
@@ -245,6 +249,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
 
     hit_col = lambda col: ~base[col].isin(["", NOT_FOUND])
     base[COL_REPORTED] = (hit_col(COL_O365) | hit_col(COL_SOC)).map({True: "Yes", False: "No"})
+    snap("Step1_Reporting", base)
 
     # --- steps 2 and 3: outcomes. Each check only fills the rows still
     # unresolved - the same as filtering Outcome down to Not Found before
@@ -265,6 +270,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
     if false_login_sso is not None:
         set_outcome(matched(false_login_sso, FALSE_LOGIN_SSO_COLS), "Clicked Link")
+    snap("Step2_FalseLogin", base)
 
     # step 3: Employee Email against To (column C), taking Log Type (column O).
     step("3", "Mimecast activity", mimecast is not None)
@@ -287,6 +293,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # columns - say Not Found rather than leaving it ambiguous.
     if any(f is not None for f in (mimecast, false_login_sso, false_login)):
         base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
+    snap("Step3_Mimecast", base)
 
     # --- step 4: GoPhish. The events file is split into sheets first - the Linux
     # (non-Android) rows are moved out entirely, then one sheet per event - and
@@ -328,6 +335,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         rest = base[COL_GOPHISH].eq("")
         base.loc[rest, COL_GOPHISH] = GOPHISH_DEFAULT
         log(f"    {int(rest.sum())} rows matched by neither file -> {GOPHISH_DEFAULT}")
+    snap("Step4_GoPhish", base)
 
     # --- step 5: a Mimecast User Click from someone who reported the mail was
     # them clicking the report button, not the phish. Runs last: it needs the
@@ -347,6 +355,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     if len(seen):
         log("    Outcome on the Reported Yes rows: "
             + ", ".join(f"{v!r} ({n})" for v, n in seen.items()))
+    snap("Step5_Reconcile", base)
 
     # --- step 6: for Germany only, an Outcome still reading Not Found or User
     # Click is replaced by that row's GoPhish value. Any other Outcome stands -
@@ -363,6 +372,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
         log(f"    {country} = Germany: {int(de.sum())} rows, "
             f"{int(take.sum())} taking their GoPhish value into Outcome")
+        snap("Step6_Germany", base)
 
         # --- step 7: everywhere except Germany, an Outcome still reading Not
         # Found or User Click becomes Email Sent. Anyone here who reported the
@@ -373,6 +383,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         base.loc[sent, COL_OUTCOME] = "Email Sent"
         log(f"    {country} not Germany: {int((~de).sum())} rows, "
             f"{int(sent.sum())} set to Email Sent")
+        snap("Step7_OutsideGermany", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
     # acted on the phish, No for every other settled outcome. A row whose Outcome
@@ -658,7 +669,10 @@ def selftest():
     check_mimecast_columns()
     check_step5_spelling()
     check_gophish_file_order()
-    final, books = run(log=lambda *_: None, **fixtures())
+    snaps = []
+    final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
+    assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
+                     "Step5_Reconcile", "Step6_Germany", "Step7_OutsideGermany"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; Mimecast may not overwrite

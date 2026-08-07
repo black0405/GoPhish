@@ -156,7 +156,10 @@ function render(res) {
     <div class="chips">${chips(res.final.outcome)}</div>
     <div class="preview-head"><span class="lab">GoPhish</span></div>
     <div class="chips">${chips(res.final.gophish)}</div>
-    <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>`;
+    <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>
+    ${res.steps?.length ? `
+    <div class="preview-head"><span class="lab">Step-wise reports — the columns as each step left them</span></div>
+    <div class="actions">${res.steps.map((f) => `<a class="btn ghost-btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>` : ''}`;
   // the pipeline log lives in the dock below, which already streamed it live
 
   $('results').replaceChildren(view);

@@ -128,8 +128,19 @@ def do_run(payload, logs=None):
             frames[key] = pr.read_any(uploaded[key], NEED.get(key))
             done(f"read {name}: {len(frames[key])} rows")
 
+    # each step drops a slim csv (identity + the generated columns) so a wrong
+    # value can be traced to the step that wrote it
+    steps = []
+
+    def snap(name, df):
+        keep = [c for c in df.columns
+                if str(c).strip().casefold() in ("employee name", "country")
+                or c in pr.ID_COLS] + pr.NEW_COLS
+        df[keep].to_csv(run / f"{name}.csv", index=False)
+        steps.append(f"{name}.csv")
+
     done = stage("running the lookups")
-    final, books = pr.run(log=logs.append, **frames)
+    final, books = pr.run(log=logs.append, snap=snap, **frames)
     done("lookups done")
 
     rows = len(final)
@@ -158,6 +169,7 @@ def do_run(payload, logs=None):
 
     return {"run": run.name, "log": logs,
             "files": [{"name": n, "url": f"/runs/{run.name}/{n}"} for n in files],
+            "steps": [{"name": n, "url": f"/runs/{run.name}/{n}"} for n in steps],
             "final": summarise(final)}
 
 
