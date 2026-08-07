@@ -15,11 +15,11 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left; GoPhish
                            column only, no country filter anywhere
-    5    Reconcile         Outcome User Click and Reported Yes -> Email Opened
-                           (a reported Not Found stays open for step 6)
-    6    Leftovers         Country = Germany rows still Not Found or User Click
-                           -> that row's GoPhish value; every other leftover
-                           -> Email Sent
+    5    Germany           Country = Germany rows still Not Found or User Click
+                           -> that row's GoPhish value (before the lift)
+    6    Reported          leftover + Reported Yes -> Email Opened
+    7    Leftovers         the rest take their GoPhish value, any country;
+                           whoever has none -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -354,47 +354,48 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
     snap("Step4_GoPhish", base)
 
-    # --- step 5: a Mimecast User Click from someone who reported the mail was
-    # them clicking the report button, not the phish. User Click ONLY - a
-    # reported Not Found stays open, so step 6 can still hand it its GoPhish
-    # value. Runs here because it needs Outcome and Reported (Yes/No).
-    log("  5   reconcile Outcome")
+    # The tail: a leftover is a row whose Outcome still reads Not Found or User
+    # Click. Order matters and each pass only touches what is still left:
+    #   5. Germany leftovers take their GoPhish value - BEFORE the reported
+    #      lift, so a German submitter who also clicked report keeps Submitted
+    #      Data rather than Email Opened.
+    #   6. Reported leftovers lift to Email Opened - clicking the report button
+    #      is what a Mimecast User Click usually was.
+    #   7. Remaining leftovers take their GoPhish value, any country; whoever
+    #      has none becomes Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
-    click = base[COL_OUTCOME].eq("User Click")
-    yes = base[COL_REPORTED].eq("Yes")
-    fix = click & yes
-    base.loc[fix, COL_OUTCOME] = "Email Opened"
-    # both counts, so a zero result says which half of the rule was empty
-    log(f"    User Click: {int(click.sum())}, Reported Yes: {int(yes.sum())}, "
-        f"both -> Email Opened: {int(fix.sum())}")
-    # and what the reported rows actually say, quoted, so a value that only looks
-    # like "User Click" is visible rather than leaving the rule looking broken
-    seen = base.loc[yes, COL_OUTCOME].value_counts().head(8)
-    if len(seen):
-        log("    Outcome on the Reported Yes rows: "
-            + ", ".join(f"{v!r} ({n})" for v, n in seen.items()))
-    snap("Step5_Reconcile", base)
+    gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
-    # --- step 6: Country = Germany rows whose Outcome still reads Not Found or
-    # User Click take that row's GoPhish value; every other leftover - the rest
-    # of Germany included, once its GoPhish says Not Found - becomes Email
-    # Sent. Anyone who reported the mail was already lifted by step 5.
-    log("  6   Germany leftovers take the GoPhish value, the rest Email Sent")
+    log("  5   Germany leftovers take the GoPhish value")
     # Country by name only - the generated columns are appended to the base, so
     # a positional fallback could land on one of those instead of column B
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
     if country is None:
         de = pd.Series(False, index=base.index)
-        log("    ! base has no Country column - no row takes the GoPhish value")
+        log("    ! base has no Country column - the Germany pass touches no row")
     else:
         de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-    take = de & unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
+    take = de & unsettled() & gp_val()
+    base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+    log(f"    Germany rows: {int(de.sum())}, {int(take.sum())} took their GoPhish value")
+    snap("Step5_Germany", base)
+
+    log("  6   reported leftovers -> Email Opened")
+    yes = base[COL_REPORTED].eq("Yes")
+    fix = unsettled() & yes
+    base.loc[fix, COL_OUTCOME] = "Email Opened"
+    # both counts, so a zero result says which half of the rule was empty
+    log(f"    leftovers: {int(unsettled().sum()) + int(fix.sum())}, Reported Yes: {int(yes.sum())}, "
+        f"both -> Email Opened: {int(fix.sum())}")
+    snap("Step6_Reported", base)
+
+    log("  7   remaining leftovers take the GoPhish value, else Email Sent")
+    take = unsettled() & gp_val()
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
-    log(f"    Germany rows: {int(de.sum())}, {int(take.sum())} took their GoPhish value, "
-        f"{int(sent.sum())} -> Email Sent")
-    snap("Step6_Leftovers", base)
+    log(f"    {int(take.sum())} took their GoPhish value, {int(sent.sum())} -> Email Sent")
+    snap("Step7_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
     # acted on the phish, No for every other settled outcome. A row whose Outcome
@@ -755,8 +756,8 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # step 5 lifts only User Click: a reported Not Found stays open, so a
-    # German row still takes its GoPhish value in step 6
+    # the Germany pass runs before the reported lift: a reported German row
+    # with a GoPhish value keeps that value, not Email Opened
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"],
                          "Country": ["Germany", "Germany"]})
     gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
@@ -766,6 +767,14 @@ def check_step5_spelling():
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
     final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link", "Clicked Link"], list(final[COL_OUTCOME])
+
+    # step 7: a non-German unreported User Click takes its GoPhish value too
+    base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
+    mm2 = pd.DataFrame({"To": ["c@x.com"], "Log Type": ["User Click"]})
+    gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
+                        "message": ["Clicked Link"], "details": ["Windows"]})
+    final, _ = run(base, gophish=gp2, mimecast=mm2, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
@@ -793,7 +802,7 @@ def selftest():
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
     assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
-                     "Step5_Reconcile", "Step6_Leftovers"], snaps
+                     "Step5_Germany", "Step6_Reported", "Step7_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
@@ -803,8 +812,7 @@ def selftest():
             "opened": "Email Opened",       # Mimecast row; GoPhish only had Email Sent
             "escalated": "Email Sent",      # Mimecast first row is Email Sent - it wins
             "clickreported": "Email Opened",  # only in Mimecast; step 5 lifted the click
-            "reported": "Email Sent",       # Not Found + reported: step 5 no longer
-                                            # lifts it; India, so step 6 -> Email Sent
+            "reported": "Email Opened",     # Not Found + reported -> the step 6 lift
             "untouched": "Email Sent",      # was Not Found, no report -> step 6 fallback
             "de_sub": "Submitted Data",
             "de_click": "Clicked Link",
