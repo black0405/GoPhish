@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import pandas as pd
+
 import phishing_report as pr
 
 ROOT = Path(__file__).resolve().parent
@@ -205,6 +207,51 @@ def do_run(payload, logs=None):
             "final": summarise(final)}
 
 
+def compare(sess):
+    """Diff the user's own report against the last run's Final_Report on
+    Employee Email. Everything stays on this machine; the result is per-column
+    mismatch counts plus a CSV of the differing rows."""
+    exp_path = sess["files"].get("expected")
+    if exp_path is None:
+        raise ValueError("upload your report in the compare box first")
+    final_path = sess["dir"] / "Final_Report.csv"
+    if not final_path.is_file():
+        raise ValueError("run the pipeline first - there is no Final_Report yet")
+
+    mine = pd.read_csv(final_path, dtype=str).fillna("")
+    theirs = pr.read_any(exp_path, "Employee Email")
+    tcols = {str(c).strip().casefold(): c for c in theirs.columns}
+    if "employee email" not in tcols:
+        raise ValueError("your report has no Employee Email column")
+
+    key = "Employee Email"
+    m = mine.assign(_k=pr.norm(mine[key])).dropna(subset=["_k"]).drop_duplicates("_k")
+    t = pd.DataFrame({"_k": pr.norm(theirs[tcols["employee email"]])})
+    pairs = [c for c in pr.NEW_COLS if c.casefold() in tcols and c in mine.columns]
+    for c in pairs:
+        t[f"yours::{c}"] = theirs[tcols[c.casefold()]].astype(str).str.strip().fillna("")
+    t = t.dropna(subset=["_k"]).drop_duplicates("_k")
+    merged = m.merge(t, on="_k", how="inner")
+
+    cols, any_diff = {}, pd.Series(False, index=merged.index)
+    for c in pairs:
+        a = merged[c].astype(str).str.strip()
+        b = merged[f"yours::{c}"]
+        diff = a.str.casefold() != b.str.casefold()
+        any_diff |= diff
+        cols[c] = int(diff.sum())
+
+    keep = [key] + [x for c in pairs for x in (c, f"yours::{c}")]
+    mism = merged.loc[any_diff, keep].rename(columns={f"yours::{c}": f"{c} (yours)" for c in pairs})
+    name = "Compare_Mismatches.csv"
+    mism.to_csv(sess["dir"] / name, index=False)
+
+    return {"rows_mine": len(m), "rows_yours": len(t), "matched": len(merged),
+            "only_mine": len(m) - len(merged), "only_yours": len(t) - len(merged),
+            "cols": cols, "diff_rows": int(any_diff.sum()),
+            "file": f"/runs/{sess['dir'].name}/{name}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # keep-alive; send() always sets Content-Length
 
@@ -237,6 +284,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             sid = parse_qs(url.query).get("sid", [""])[0]
             return self.send(200, json.dumps(JOBS.get(sid, {"state": "unknown"})))
+        if path == "/compare":
+            try:
+                sess = session(parse_qs(url.query).get("sid", [""])[0])
+                return self.send(200, json.dumps(compare(sess)))
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send(400, json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
         if path == "/trace":
             q = parse_qs(url.query)
             try:
@@ -264,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
         """Stream one raw-body upload straight to disk. Never buffers the file."""
         sid = query.get("sid", [""])[0]
         key = query.get("key", [""])[0]
-        if key not in SOURCES:
+        if key not in SOURCES and key != "expected":   # "expected" is the user's own report, for /compare
             raise ValueError(f"unknown source {key!r}")
         sess = session(sid)
         name = Path(unquote(query.get("name", ["upload"])[0])).name or "upload"

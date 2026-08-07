@@ -167,7 +167,13 @@ function render(res) {
       <input id="trace-email" type="email" placeholder="user@company.com" spellcheck="false">
       <button class="btn" id="trace-btn">Trace</button>
     </div>
-    <div class="logbody mono" id="trace-out" hidden></div>`;
+    <div class="logbody mono" id="trace-out" hidden></div>
+    <div class="preview-head"><span class="lab">Compare with your report — upload yours, get the differing rows</span></div>
+    <div class="trace-row">
+      <input id="cmp-file" type="file" accept=".xlsx,.xls,.csv">
+      <button class="btn" id="cmp-btn" disabled>Compare</button>
+    </div>
+    <div class="logbody mono" id="cmp-out" hidden></div>`;
   // the pipeline log lives in the dock below, which already streamed it live
 
   $('results').replaceChildren(view);
@@ -191,6 +197,35 @@ function render(res) {
   };
   $('trace-btn').addEventListener('click', go);
   $('trace-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+
+  const cmpOut = (html) => { const b = $('cmp-out'); b.hidden = false; b.innerHTML = html; };
+  const row = (l) => `<div class="logrow">${l}</div>`;
+  $('cmp-file').addEventListener('change', async () => {
+    const f = $('cmp-file').files[0];
+    if (!f) return;
+    $('cmp-btn').disabled = true;
+    cmpOut(row(`uploading ${esc(f.name)}…`));
+    try {
+      await xhrUpload('expected', f, (p) => cmpOut(row(`uploading ${esc(f.name)} · ${(p * 100).toFixed(0)}%`)));
+      cmpOut(row(`${esc(f.name)} uploaded — hit Compare`));
+      $('cmp-btn').disabled = false;
+    } catch (e) { cmpOut(`<div class="logrow lv-error">${esc(e.message)}</div>`); }
+  });
+  $('cmp-btn').addEventListener('click', async () => {
+    cmpOut(row('comparing…'));
+    try {
+      const r = await fetch(`/compare?sid=${sid}`);
+      const out = await r.json();
+      if (!r.ok) throw new Error(out.error || r.statusText);
+      const lines = [
+        `rows: generated ${out.rows_mine}, yours ${out.rows_yours}, matched on Employee Email ${out.matched}`,
+        `only in generated: ${out.only_mine}, only in yours: ${out.only_yours}`,
+        ...Object.entries(out.cols).map(([c, n]) => `${c}: ${n ? `${n} rows differ` : 'identical'}`),
+      ];
+      cmpOut(lines.map((l) => row(esc(l))).join('')
+        + (out.diff_rows ? `<div class="logrow"><a class="btn" href="${out.file}" download>Compare_Mismatches.csv (${out.diff_rows} rows)</a></div>` : row('no differences in the compared columns')));
+    } catch (e) { cmpOut(`<div class="logrow lv-error">${esc(e.message)}</div>`); }
+  });
 }
 
 /* ---- run log dock ---- */
