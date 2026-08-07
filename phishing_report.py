@@ -72,7 +72,7 @@ MIMECAST_SEVERITY = {"Email Sent": 0, "Email Opened": 1, "User Click": 2}
 GOPHISH_EVENTS = ["Clicked Link", "Email Sent"]                       # 4.1 sheets and fill order
 GOPHISH_DE_EVENTS = ["Clicked Link", "Email Sent", "Submitted Data"]  # 4.2 sheet order
 GOPHISH_DE_FILL = ["Submitted Data", "Clicked Link", "Email Sent"]    # 4.2 fill order
-GOPHISH_DEFAULT = "Email Sent"   # what GoPhish reads when neither file named the user
+GOPHISH_DEFAULT = "Email Sent"   # the one event that never fills Outcome (delivery only)
 SHEET_EXCLUDED = "excluded linux"
 # each GoPhish file becomes its own workbook, so the two download separately
 BOOK_GOPHISH, BOOK_GOPHISH_DE = "GoPhish_non_german", "GoPhish_german"
@@ -334,13 +334,14 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         fill_gophish(frames, GOPHISH_DE_FILL, em, message, into_outcome=True, only=elig["de"])
 
     # Blank is the unresolved marker while 4.1 and 4.2 run. Whoever neither file
-    # named still received the mail, so the leftovers read Email Sent rather than
-    # Not Found - including anyone whose only events were Linux rows that 4.1 or
-    # 4.2 excluded. The default goes into the GoPhish column only, never Outcome.
+    # named reads Not Found - including anyone whose only events were Linux rows
+    # that 4.1 or 4.2 excluded, or who sat on the wrong side of the country
+    # filter. Step 6 turns an Outcome leftover with no GoPhish value into Email
+    # Sent, so the report still settles every row.
     if gophish is not None or gophish_de is not None:
         rest = base[COL_GOPHISH].eq("")
-        base.loc[rest, COL_GOPHISH] = GOPHISH_DEFAULT
-        log(f"    {int(rest.sum())} rows matched by neither file -> {GOPHISH_DEFAULT}")
+        base.loc[rest, COL_GOPHISH] = NOT_FOUND
+        log(f"    {int(rest.sum())} rows matched by neither file -> {NOT_FOUND}")
     snap("Step4_GoPhish", base)
 
     # step 3: Employee Email against To (column C), taking Log Type (column N).
@@ -725,11 +726,11 @@ def check_gophish_country_filter():
     de = pd.DataFrame([r[:4] + [""] + r[4:] for r in rows], columns=cols[:4] + ["Sort", "details"])
 
     final, _ = run(base, gophish=non_de, log=lambda *_: None)
-    assert list(final[COL_GOPHISH]) == ["Email Sent", "Clicked Link"], list(final[COL_GOPHISH])
+    assert list(final[COL_GOPHISH]) == [NOT_FOUND, "Clicked Link"], list(final[COL_GOPHISH])
     assert list(final[COL_OUTCOME]) == ["Email Sent", "Clicked Link"], list(final[COL_OUTCOME])
 
     final, _ = run(base, gophish_de=de, log=lambda *_: None)
-    assert list(final[COL_GOPHISH]) == ["Clicked Link", "Email Sent"], list(final[COL_GOPHISH])
+    assert list(final[COL_GOPHISH]) == ["Clicked Link", NOT_FOUND], list(final[COL_GOPHISH])
     assert list(final[COL_OUTCOME]) == ["Clicked Link", "Email Sent"], list(final[COL_OUTCOME])
 
 
@@ -887,16 +888,15 @@ def selftest():
     want_gp = {"clicked": "Clicked Link",     # in both sheets, Clicked Link runs first
                "escalated": "Clicked Link",
                "opened": "Email Sent",
-               "untouched": GOPHISH_DEFAULT,  # its only row was excluded as Linux
-               "submitted": GOPHISH_DEFAULT, "reported": GOPHISH_DEFAULT,
+               "untouched": NOT_FOUND,        # its only row was excluded as Linux
+               "submitted": NOT_FOUND, "reported": NOT_FOUND,
                "de_sub": "Submitted Data",    # German, filled by 4.2
                "de_click": "Clicked Link",
                "de_sent": "Email Sent",
                "de_both": "Submitted Data",   # in two German sheets, this one fills first
-               "de_excluded": GOPHISH_DEFAULT,  # its rows were excluded as Linux
-               "de_keep": GOPHISH_DEFAULT,    # neither file names them
+               "de_excluded": NOT_FOUND,      # its rows were excluded as Linux
+               "de_keep": NOT_FOUND,          # neither file names them
                "de_mimeboth": "Email Sent"}
-    assert NOT_FOUND not in set(f[COL_GOPHISH]), set(f[COL_GOPHISH])
     # steps 6 and 7 between them settle every row, so Outcome has no leftovers
     assert NOT_FOUND not in set(f[COL_OUTCOME]), set(f[COL_OUTCOME])
     assert "User Click" not in set(f[COL_OUTCOME]), set(f[COL_OUTCOME])
