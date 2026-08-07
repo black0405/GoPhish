@@ -139,6 +139,8 @@ def do_run(payload, logs=None):
         df[keep].to_csv(run / f"{name}.csv", index=False)
         steps.append(f"{name}.csv")
 
+    sess["frames"] = frames   # ponytail: kept in RAM for /trace; drop if memory hurts
+
     done = stage("running the lookups")
     final, books = pr.run(log=logs.append, snap=snap, **frames)
     done("lookups done")
@@ -205,6 +207,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             sid = parse_qs(url.query).get("sid", [""])[0]
             return self.send(200, json.dumps(JOBS.get(sid, {"state": "unknown"})))
+        if path == "/trace":
+            q = parse_qs(url.query)
+            try:
+                sess = session(q.get("sid", [""])[0])
+                if "frames" not in sess:   # server restarted since the run - re-read from disk
+                    sess["frames"] = {k: pr.read_any(p, NEED.get(k))
+                                      for k, p in sess["files"].items()}
+                lines = pr.trace(q.get("email", [""])[0], sess["frames"])
+                return self.send(200, json.dumps({"lines": lines}))
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send(400, json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
         if path.startswith("/runs/"):
             target = (RUNS / path[len("/runs/"):]).resolve()
             if RUNS.resolve() not in target.parents or not target.is_file():

@@ -159,10 +159,36 @@ function render(res) {
     <div class="actions">${res.files.map((f) => `<a class="btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>
     ${res.steps?.length ? `
     <div class="preview-head"><span class="lab">Step-wise reports — the columns as each step left them</span></div>
-    <div class="actions">${res.steps.map((f) => `<a class="btn ghost-btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>` : ''}`;
+    <div class="actions">${res.steps.map((f) => `<a class="btn ghost-btn" href="${f.url}" download>${esc(f.name)}</a>`).join('')}</div>` : ''}
+    <div class="preview-head"><span class="lab">Trace one user — which file and column matched them, and which missed</span></div>
+    <div class="trace-row">
+      <input id="trace-email" type="email" placeholder="user@company.com" spellcheck="false">
+      <button class="btn" id="trace-btn">Trace</button>
+    </div>
+    <div class="logbody mono" id="trace-out" hidden></div>`;
   // the pipeline log lives in the dock below, which already streamed it live
 
   $('results').replaceChildren(view);
+
+  const go = async () => {
+    const email = $('trace-email').value.trim();
+    if (!email) return;
+    const box = $('trace-out');
+    box.hidden = false;
+    box.innerHTML = '<div class="logrow run">tracing… (first trace after a server restart re-reads the files)</div>';
+    try {
+      const r = await fetch(`/trace?sid=${sid}&email=${encodeURIComponent(email)}`);
+      const out = await r.json();
+      if (!r.ok) throw new Error(out.error || r.statusText);
+      box.innerHTML = out.lines
+        .map((l) => `<div class="logrow${/MISSED|^!|: !/.test(l) ? ' lv-error' : ''}">${esc(l)}</div>`)
+        .join('');
+    } catch (e) {
+      box.innerHTML = `<div class="logrow lv-error">${esc(e.message)}</div>`;
+    }
+  };
+  $('trace-btn').addEventListener('click', go);
+  $('trace-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
 }
 
 /* ---- run log dock ---- */

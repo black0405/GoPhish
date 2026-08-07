@@ -402,6 +402,75 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     return base, books
 
 
+# what each step reads, and the value column a hit copies - trace() compares
+# these against where an identity actually sits in the file
+TRACE_READS = {"false_login": FALSE_LOGIN_COLS, "false_login_sso": FALSE_LOGIN_SSO_COLS,
+               "mimecast": ["To"], "o365": ["SenderAddress"], "soc": ["User"],
+               "gophish": ["email"], "gophish_de": ["email"]}
+TRACE_VALS = {"mimecast": "Log Type", "o365": "Reported", "soc": "reported",
+              "gophish": "message", "gophish_de": "message"}
+
+
+def trace(email, srcs):
+    """One user across every source file: their userbase identities, which
+    columns of each file hold any of them, and whether that column is one the
+    step reads. Explains a wrong match without the data leaving the machine."""
+    e = norm(pd.Series([email])).iloc[0]
+    if pd.isna(e):
+        return [f"{email!r} does not look like an email"]
+    out, idents = [f"tracing {e}"], {e}
+
+    base = srcs.get("base")
+    if base is not None:
+        ids = {c: norm(base[c]) for c in ID_COLS if c in base.columns}
+        mask = pd.Series(False, index=base.index)
+        for s in ids.values():
+            mask |= s.eq(e)
+        if not mask.any():
+            out.append(f"! not in the userbase under any of: {', '.join(ids)}")
+        else:
+            i = mask.idxmax()
+            for c, s in ids.items():
+                v = s.loc[i]
+                out.append(f"  userbase {c}: {'(blank)' if pd.isna(v) else v}")
+                if pd.notna(v):
+                    idents.add(v)
+
+    for name in TRACE_READS:
+        df = srcs.get(name)
+        if df is None:
+            continue
+        # false_login steps match every userbase identity; every other step
+        # matches the Employee Email value only
+        prim = idents if name.startswith("false_login") else {e}
+        found = {}   # column -> rows holding one of this step's identities
+        other = []   # columns holding one of the OTHER identities
+        for c in df.columns:
+            hit = norm(df[c]).isin(prim)
+            if hit.any():
+                found[str(c)] = df.index[hit]
+            elif norm(df[c]).isin(idents).any():
+                other.append(str(c))
+        reads = TRACE_READS[name]
+        used = [c for c in found if any(r.casefold() == c.strip().casefold() for r in reads)]
+        if used:
+            vcol = col_of(df, [TRACE_VALS[name]], 99) if name in TRACE_VALS else None
+            vals = ""
+            if vcol is not None:
+                got = df.loc[[i for c in used for i in found[c]], vcol].dropna().unique()
+                vals = f" -> {vcol}: {', '.join(map(repr, got[:6]))}"
+            out.append(f"{name}: MATCHED via {', '.join(used)}{vals}")
+        elif found:
+            out.append(f"{name}: ! sits in {', '.join(found)} but the step reads "
+                       f"{', '.join(reads)} - MISSED, header differs")
+        elif other:
+            out.append(f"{name}: ! found only in {', '.join(other)} under an SSO identity - "
+                       "this step matches Employee Email only, so MISSED")
+        else:
+            out.append(f"{name}: not in the file")
+    return out
+
+
 def write_xlsx(path, sheets):
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         for name, frame in sheets.items():
@@ -762,6 +831,16 @@ def selftest():
     assert "User Click" not in set(f[COL_OUTCOME]), set(f[COL_OUTCOME])
     for name, value in want_gp.items():
         assert f.loc[name, COL_GOPHISH] == value, f"{name}: {f.loc[name, COL_GOPHISH]!r} != {value!r}"
+
+    # trace: a false_login step matches any identity, the rest Employee Email only
+    t = trace("clicked@x.com", fixtures())
+    assert any(s.startswith("false_login_sso: MATCHED via Email") for s in t), t
+    assert any(s == "mimecast: not in the file" for s in t), t
+    assert any(s.startswith("gophish: MATCHED via email") and "Clicked Link" in s for s in t), t
+    t = trace("submitted@x.com", dict(
+        base=fixtures()["base"],
+        mimecast=pd.DataFrame({"To": ["submitted@sso.x.com"], "Log Type": ["User Click"]})))
+    assert any(s.startswith("mimecast:") and "MISSED" in s for s in t), t
 
     print("selftest: all checks pass")
     return 0
