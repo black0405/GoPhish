@@ -428,6 +428,17 @@ def trace(email, srcs):
     if pd.isna(e):
         return [f"{email!r} does not look like an email"]
     out, idents = [f"tracing {e}"], {e}
+    local = e.split("@")[0]
+
+    def similar(df):
+        """Values with the same local part but another domain/spelling - the
+        usual reason a row the eye can see still misses the exact match."""
+        hits = []
+        for c in df.columns:
+            v = norm(df[c])
+            near = v[v.str.split("@").str[0].eq(local).fillna(False)].unique()
+            hits += [f"      ~ {c}: {x}" for x in near[:3]]
+        return hits[:6]
 
     base = srcs.get("base")
     if base is not None:
@@ -437,6 +448,7 @@ def trace(email, srcs):
             mask |= s.eq(e)
         if not mask.any():
             out.append(f"! not in the userbase under any of: {', '.join(ids)}")
+            out += similar(base[list(ids)])
         else:
             i = mask.idxmax()
             for c, s in ids.items():
@@ -476,7 +488,9 @@ def trace(email, srcs):
             out.append(f"{name}: ! found only in {', '.join(other)} under an SSO identity - "
                        "this step matches Employee Email only, so MISSED")
         else:
-            out.append(f"{name}: not in the file")
+            near = similar(df)
+            out.append(f"{name}: not in the file" + (" - but similar values exist:" if near else ""))
+            out += near
     return out
 
 
@@ -877,6 +891,11 @@ def selftest():
         base=fixtures()["base"],
         mimecast=pd.DataFrame({"To": ["submitted@sso.x.com"], "Log Type": ["User Click"]})))
     assert any(s.startswith("mimecast:") and "MISSED" in s for s in t), t
+    # an email in the file under another domain shows up as a similar value
+    t = trace("someone@x.com", dict(gophish_de=pd.DataFrame(
+        {"email": ["someone@de.x.com"], "message": ["Clicked Link"]})))
+    assert any("similar values exist" in s for s in t), t
+    assert any("someone@de.x.com" in s for s in t), t
 
     print("selftest: all checks pass")
     return 0
