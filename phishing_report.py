@@ -7,14 +7,15 @@ The steps built so far, over the whole Userbase file:
     1.2  Reported to SOC   User (C) -> reported (D)
     2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G)
     2.2  false_login_sso   Email (D) -> its Outcome (G)
+    3    Mimecast          To (C) -> Log Type (N), first row per user, only
+                           rows step 2 left empty
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first;
                            Country != Germany rows only. Submitted Data /
-                           Clicked Link also copy into Outcome, Email Sent not
+                           Clicked Link also copy into Outcome (rows steps 2-3
+                           left empty), Email Sent not
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
                            Link, Email Sent order; Country = Germany rows only,
                            same Outcome rule
-    3    Mimecast          To (C) -> Log Type (N), after step 4 - it only
-                           fills rows the GoPhish files left empty
     5    Reconcile         Outcome User Click or Not Found, and Reported Yes
                            -> Email Opened
     6    Leftovers         Outcome still Not Found or User Click -> that row's
@@ -276,12 +277,30 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         outcome_fill(false_login_sso, FALSE_LOGIN_SSO_COLS, "Clicked Link")
     snap("Step2_FalseLogin", base)
 
-    # --- step 4: GoPhish - runs BEFORE Mimecast. The events file is split into
+    # --- step 3: Mimecast - runs before GoPhish, so its value wins for anyone
+    # it names. Employee Email against To (column C), taking Log Type (column
+    # N). Only fills rows step 2 left empty.
+    step("3", "Mimecast activity", mimecast is not None)
+    if mimecast is not None:
+        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
+        k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
+        # XLOOKUP semantics: a user with several Mimecast rows takes the FIRST
+        # row in the file, not the strongest event
+        ok = k.notna()
+        hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
+        fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
+        base.loc[fill, COL_OUTCOME] = hit[fill]
+        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
+        log(f"    -> {int(fill.sum())} set, "
+            f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
+    snap("Step3_Mimecast", base)
+
+    # --- step 4: GoPhish - after Mimecast. The events file is split into
     # sheets first - the Linux (non-Android) rows are moved out entirely, then
     # one sheet per event - and the GoPhish column is filled from those sheets,
-    # each pass only filling rows the pass before it left unresolved. BOTH files
-    # also copy their value into Outcome for rows step 2 left empty - no country
-    # filter - so any user with a GoPhish event is settled before Mimecast.
+    # each pass only filling rows the pass before it left unresolved. Both files
+    # also copy their acted events into Outcome, for rows steps 2 and 3 left
+    # empty, each restricted to its side of the country filter.
     def fill_gophish(frames, order, em, message, into_outcome=False, only=None):
         """Each sheet in turn, filling only the rows still unresolved - the same
         filter-to-Not-Found-then-map shape the Outcome steps use. The value
@@ -342,30 +361,13 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         rest = base[COL_GOPHISH].eq("")
         base.loc[rest, COL_GOPHISH] = NOT_FOUND
         log(f"    {int(rest.sum())} rows matched by neither file -> {NOT_FOUND}")
-    snap("Step4_GoPhish", base)
-
-    # step 3: Employee Email against To (column C), taking Log Type (column N).
-    # Runs after step 4, so it only fills rows the GoPhish files left empty.
-    step("3", "Mimecast activity", mimecast is not None)
-    if mimecast is not None:
-        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
-        k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
-        # XLOOKUP semantics: a user with several Mimecast rows takes the FIRST
-        # row in the file, not the strongest event
-        ok = k.notna()
-        hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
-        fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
-        base.loc[fill, COL_OUTCOME] = hit[fill]
-        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
-        log(f"    -> {int(fill.sum())} set, "
-            f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
 
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
     # columns - say Not Found rather than leaving it ambiguous.
     if any(f is not None for f in (mimecast, false_login_sso, false_login, gophish, gophish_de)):
         base.loc[base[COL_OUTCOME].eq(""), COL_OUTCOME] = NOT_FOUND
-    snap("Step3_Mimecast", base)
+    snap("Step4_GoPhish", base)
 
     # --- step 5: a Mimecast User Click from someone who reported the mail was
     # them clicking the report button, not the phish. Runs last: it needs the
@@ -814,17 +816,16 @@ def selftest():
     check_gophish_file_order()
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
-    assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step4_GoPhish", "Step3_Mimecast",
+    assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
                      "Step5_Reconcile", "Step6_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
-            # both files fill Outcome before Mimecast, no country filter - but
-            # only their Submitted Data / Clicked Link events; Email Sent stays
-            # open so Mimecast can still say Email Opened
-            "opened": "Email Opened",       # GoPhish only had Email Sent; Mimecast filled
-            "escalated": "Clicked Link",    # 4.1 clicked link sheet beat the User Click
+            # Mimecast runs before GoPhish, so its first row wins for anyone it
+            # names; GoPhish acted events fill only what Mimecast left empty
+            "opened": "Email Opened",       # Mimecast row; GoPhish only had Email Sent
+            "escalated": "Email Sent",      # Mimecast first row is Email Sent - it wins
             "clickreported": "Email Opened",  # only in Mimecast; step 5 lifted the click
             "reported": "Email Opened",     # was Not Found, but they reported it
             "untouched": "Email Sent",      # was Not Found, no report -> step 6 fallback
