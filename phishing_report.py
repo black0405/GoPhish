@@ -9,13 +9,12 @@ The steps built so far, over the whole Userbase file:
     2.2  false_login_sso   Email (D) -> its Outcome (G)
     3    Mimecast          To (C) -> Log Type (N), first row per user, only
                            rows step 2 left empty
-    4.1  GoPhish           email (B) -> message (D), Linux rows excluded first;
-                           Country != Germany rows only. Submitted Data /
-                           Clicked Link also copy into Outcome (rows steps 2-3
-                           left empty), Email Sent not
-    4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
-                           Link, Email Sent order; Country = Germany rows only,
-                           same Outcome rule
+    4.1  GoPhish           email (B) -> message (D) into the GoPhish column
+                           ONLY, Linux rows excluded first; clicked link sheet,
+                           then email sent, leftovers Not Found
+    4.2  GoPhish German    the same split, filling Submitted Data, Clicked
+                           Link, Email Sent order over what 4.1 left; GoPhish
+                           column only, no country filter anywhere
     5    Reconcile         Outcome User Click or Not Found, and Reported Yes
                            -> Email Opened
     6    Leftovers         Outcome still Not Found or User Click -> that row's
@@ -295,62 +294,39 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
     snap("Step3_Mimecast", base)
 
-    # --- step 4: GoPhish - after Mimecast. The events file is split into
-    # sheets first - the Linux (non-Android) rows are moved out entirely, then
-    # one sheet per event - and the GoPhish column is filled from those sheets,
-    # each pass only filling rows the pass before it left unresolved. Both files
-    # also copy their acted events into Outcome, for rows steps 2 and 3 left
-    # empty, each restricted to its side of the country filter.
-    def fill_gophish(frames, order, em, message, into_outcome=False, only=None):
+    # --- step 4: GoPhish - the GoPhish column ONLY, never Outcome, and no
+    # country filter. The events file is split into sheets first - the Linux
+    # (non-Android) rows are moved out entirely, then one sheet per event - and
+    # the GoPhish column is filled from those sheets, each pass only filling
+    # rows the pass before it left unresolved. Outcome meets these values only
+    # through step 6, which hands a leftover row its GoPhish value.
+    def fill_gophish(frames, order, em, message):
         """Each sheet in turn, filling only the rows still unresolved - the same
         filter-to-Not-Found-then-map shape the Outcome steps use. The value
-        written is the sheet's own message, not a constant. `only` restricts
-        the base rows a file may touch (the per-file country filter)."""
+        written is the sheet's own message, not a constant."""
         for event in order:
             frame = frames[event]
             hit = ident["Employee Email"].map(dict(zip(norm(frame[em]), message[frame.index])))
-            ok = hit.notna() if only is None else hit.notna() & only
             unresolved = base[COL_GOPHISH].eq("")
-            base.loc[ok & unresolved, COL_GOPHISH] = hit[ok & unresolved]
-            skipped = int(hit.notna().sum()) - int(ok.sum())
-            log(f"    '{event.lower()}' -> Employee Email <- {em}: {int(ok.sum())} matched"
-                + (f", {skipped} skipped by the country filter" if skipped else ""))
-            log(f"    -> {int((ok & unresolved).sum())} set, "
-                f"{int((ok & ~unresolved).sum())} already resolved by an earlier sheet")
-            # only the events that mean the user acted go into Outcome; an
-            # Email Sent event proves nothing beyond delivery, so the row stays
-            # open for Mimecast (Email Opened etc.) and the step 6 fallback
-            if into_outcome and event != GOPHISH_DEFAULT:
-                open_o = ok & base[COL_OUTCOME].eq("")
-                base.loc[open_o, COL_OUTCOME] = hit[open_o]
-                log(f"    -> Outcome: {int(open_o.sum())} set")
+            base.loc[hit.notna() & unresolved, COL_GOPHISH] = hit[hit.notna() & unresolved]
+            log(f"    '{event.lower()}' -> Employee Email <- {em}: {int(hit.notna().sum())} matched")
+            log(f"    -> {int((hit.notna() & unresolved).sum())} set, "
+                f"{int((hit.notna() & ~unresolved).sum())} already resolved by an earlier sheet")
 
-    # the per-file country filter: the German file may only touch Country =
-    # Germany rows, the non-German file everyone else. By name only - the
-    # generated columns are appended, so a positional fallback could mislead.
-    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    if country is not None:
-        is_de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-        elig = {"de": is_de, "non": ~is_de}
-    else:
-        elig = {"de": None, "non": None}
-        if gophish is not None or gophish_de is not None:
-            log("  ! base has no Country column - the GoPhish files map without a country filter")
-
-    step("4.1", "GoPhish activity (non-German, fills Outcome too)", gophish is not None)
+    step("4.1", "GoPhish activity (non-German)", gophish is not None)
     if gophish is not None:
         books[BOOK_GOPHISH], frames, em, message = gophish_split(
             gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
-        fill_gophish(frames, GOPHISH_EVENTS, em, message, into_outcome=True, only=elig["non"])
+        fill_gophish(frames, GOPHISH_EVENTS, em, message)
 
     # 4.2: the German file is split the same way but into four sheets, and fills
     # in a different order - Submitted Data first, then Clicked Link, then Email
     # Sent - over the rows 4.1 left unresolved.
-    step("4.2", "GoPhish activity (German, fills Outcome too)", gophish_de is not None)
+    step("4.2", "GoPhish activity (German)", gophish_de is not None)
     if gophish_de is not None:
         books[BOOK_GOPHISH_DE], frames, em, message = gophish_split(
             gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, log)
-        fill_gophish(frames, GOPHISH_DE_FILL, em, message, into_outcome=True, only=elig["de"])
+        fill_gophish(frames, GOPHISH_DE_FILL, em, message)
 
     # Blank is the unresolved marker while 4.1 and 4.2 run. Whoever neither file
     # named reads Not Found - including anyone whose only events were Linux rows
@@ -716,26 +692,6 @@ def check_outcome_copy():
     assert list(final[COL_OUTCOME]) == ["Weird Value", "From E", "Late"], list(final[COL_OUTCOME])
 
 
-def check_gophish_country_filter():
-    """The German file may only touch Country = Germany rows and the non-German
-    file everyone else, even when a user appears in the wrong file."""
-    base = pd.DataFrame({"Employee Email": ["de@x.com", "in@x.com"],
-                         "Country": ["Germany", "India"]})
-    cols = ["campaign_id", "email", "time", "message", "details"]
-    rows = [["1", "de@x.com", "09:00", "Clicked Link", "Windows"],
-            ["1", "in@x.com", "09:00", "Clicked Link", "Windows"]]
-    non_de = pd.DataFrame(rows, columns=cols)
-    de = pd.DataFrame([r[:4] + [""] + r[4:] for r in rows], columns=cols[:4] + ["Sort", "details"])
-
-    final, _ = run(base, gophish=non_de, log=lambda *_: None)
-    assert list(final[COL_GOPHISH]) == [NOT_FOUND, "Clicked Link"], list(final[COL_GOPHISH])
-    assert list(final[COL_OUTCOME]) == ["Email Sent", "Clicked Link"], list(final[COL_OUTCOME])
-
-    final, _ = run(base, gophish_de=de, log=lambda *_: None)
-    assert list(final[COL_GOPHISH]) == ["Clicked Link", NOT_FOUND], list(final[COL_GOPHISH])
-    assert list(final[COL_OUTCOME]) == ["Clicked Link", "Email Sent"], list(final[COL_OUTCOME])
-
-
 def check_gophish_file_order():
     """4.1 runs before 4.2, so a user named by both files keeps the non-German
     value even when the German file would have given a different one."""
@@ -779,8 +735,9 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # a GoPhish event settles Outcome in step 4, before Mimecast and before the
-    # step 5 report-downgrade - real click evidence beats the report
+    # GoPhish never writes Outcome directly: a leftover row meets its GoPhish
+    # value only in step 6, and step 5's report-lift runs first - so a reported
+    # Not Found is Email Opened even when GoPhish says Clicked Link
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"]})
     gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
                        "time": ["09:00"] * 2, "message": ["Clicked Link"] * 2,
@@ -788,7 +745,7 @@ def check_step5_spelling():
     o365 = pd.DataFrame({"SenderAddress": ["a@x.com"], "Reported": ["o365"]})
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
     final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Clicked Link", "Clicked Link"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Email Opened", "Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
@@ -811,7 +768,6 @@ def selftest():
     check_outcome_copy()
     check_lookup_fallback()
     check_mimecast_columns()
-    check_gophish_country_filter()
     check_step5_spelling()
     check_gophish_file_order()
     snaps = []

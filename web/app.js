@@ -8,8 +8,8 @@ const SOURCES = [
   ['false_login', 'False login — Submitted', 'Username / Email (SSO) → its Outcome (G)'],
   ['false_login_sso', 'False login SSO — Clicked', 'Email → its Outcome (G)'],
   ['mimecast', 'Mimecast activity', 'To (C) → Log Type (N)'],
-  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), Country ≠ Germany only'],
-  ['gophish_de', 'GoPhish events — German', 'Country = Germany only; submitted, clicked, sent order'],
+  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), GoPhish column only'],
+  ['gophish_de', 'GoPhish events — German', 'submitted, clicked, sent order; GoPhish column only'],
 ];
 
 let sid = crypto.randomUUID();
