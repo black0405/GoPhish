@@ -15,8 +15,8 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left; GoPhish
                            column only, no country filter anywhere
-    5    Reconcile         Outcome User Click or Not Found, and Reported Yes
-                           -> Email Opened
+    5    Reconcile         Outcome User Click and Reported Yes -> Email Opened
+                           (a reported Not Found stays open for step 6)
     6    Leftovers         Country = Germany rows still Not Found or User Click
                            -> that row's GoPhish value; every other leftover
                            -> Email Sent
@@ -355,16 +355,17 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     snap("Step4_GoPhish", base)
 
     # --- step 5: a Mimecast User Click from someone who reported the mail was
-    # them clicking the report button, not the phish. Runs last: it needs the
-    # Outcome from steps 2-3 and Reported (Yes/No) from step 1.
+    # them clicking the report button, not the phish. User Click ONLY - a
+    # reported Not Found stays open, so step 6 can still hand it its GoPhish
+    # value. Runs here because it needs Outcome and Reported (Yes/No).
     log("  5   reconcile Outcome")
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
-    open_ = unsettled()
+    click = base[COL_OUTCOME].eq("User Click")
     yes = base[COL_REPORTED].eq("Yes")
-    fix = open_ & yes
+    fix = click & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     # both counts, so a zero result says which half of the rule was empty
-    log(f"    User Click or {NOT_FOUND}: {int(open_.sum())}, Reported Yes: {int(yes.sum())}, "
+    log(f"    User Click: {int(click.sum())}, Reported Yes: {int(yes.sum())}, "
         f"both -> Email Opened: {int(fix.sum())}")
     # and what the reported rows actually say, quoted, so a value that only looks
     # like "User Click" is visible rather than leaving the rule looking broken
@@ -754,9 +755,8 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # GoPhish never writes Outcome directly: a German leftover row meets its
-    # GoPhish value only in step 6, and step 5's report-lift runs first - so a
-    # reported Not Found is Email Opened even when GoPhish says Clicked Link
+    # step 5 lifts only User Click: a reported Not Found stays open, so a
+    # German row still takes its GoPhish value in step 6
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"],
                          "Country": ["Germany", "Germany"]})
     gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
@@ -765,7 +765,7 @@ def check_step5_spelling():
     o365 = pd.DataFrame({"SenderAddress": ["a@x.com"], "Reported": ["o365"]})
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
     final, _ = run(base, gophish=gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Opened", "Clicked Link"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Clicked Link", "Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
@@ -803,7 +803,8 @@ def selftest():
             "opened": "Email Opened",       # Mimecast row; GoPhish only had Email Sent
             "escalated": "Email Sent",      # Mimecast first row is Email Sent - it wins
             "clickreported": "Email Opened",  # only in Mimecast; step 5 lifted the click
-            "reported": "Email Opened",     # was Not Found, but they reported it
+            "reported": "Email Sent",       # Not Found + reported: step 5 no longer
+                                            # lifts it; India, so step 6 -> Email Sent
             "untouched": "Email Sent",      # was Not Found, no report -> step 6 fallback
             "de_sub": "Submitted Data",
             "de_click": "Clicked Link",
