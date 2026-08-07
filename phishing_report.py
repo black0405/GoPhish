@@ -5,8 +5,8 @@ The steps built so far, over the whole Userbase file:
 
     1.1  Reported to O365  SenderAddress (C) -> Reported (K)
     1.2  Reported to SOC   User (C) -> reported (D)
-    2.1  Submitted Data    false_login,     Username / Email (SSO)
-    2.2  Clicked Link      false_login_sso, Email
+    2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G)
+    2.2  false_login_sso   Email (D) -> its Outcome (G)
     3    Mimecast          To (C) -> Log Type (O)
     4.1  GoPhish           email (B) -> message (D), Linux rows excluded first
     4.2  GoPhish German    the same split, filling in Submitted Data, Clicked
@@ -196,19 +196,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     if missing:
         log(f"! base file has no {', '.join(missing)} - matching on the rest")
 
-    def matched(src, cols):
-        """OR over every (base identity column x source column) pair, each pair
-        logged with its own count so a mapping table can be checked row by row."""
-        m = pd.Series(False, index=base.index)
-        for b in ident:
-            for c in cols:
-                if c not in src.columns:
-                    continue
-                hit = ident[b].isin(set(norm(src[c]).dropna()))
-                log(f"    {b} <- {c}: {int(hit.sum())}")
-                m |= hit
-        return m
-
     def step(n, name, ok):
         log(f"{'  ' if ok else '- '}{n} {name}" + ("" if ok else " (skipped, no file)"))
 
@@ -251,25 +238,36 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     base[COL_REPORTED] = (hit_col(COL_O365) | hit_col(COL_SOC)).map({True: "Yes", False: "No"})
     snap("Step1_Reporting", base)
 
-    # --- steps 2 and 3: outcomes. Each check only fills the rows still
-    # unresolved - the same as filtering Outcome down to Not Found before
-    # applying the next mapping - so a user matched by 2.1 keeps Submitted Data
-    # even when 2.2 and 3 also name them, and no later check can wipe an outcome
-    # an earlier one established. Blank is the unresolved marker while the steps
-    # run; it becomes Not Found once they are all done.
-    def set_outcome(hit, value):
-        unresolved = base[COL_OUTCOME].eq("")
-        base.loc[hit & unresolved, COL_OUTCOME] = value
-        log(f"    -> {int((hit & unresolved).sum())} set, "
-            f"{int((hit & ~unresolved).sum())} already resolved by an earlier check")
+    # --- step 2: false logins, XLOOKUP-style. For each (base identity x source
+    # column) pair IN ORDER - S->D, S->E, AD->D, AD->E, AG->D, AG->E - a hit
+    # copies that row's own Outcome value (column G). Each later pair fills only
+    # the rows still empty, and within one column the FIRST row for a user wins,
+    # as XLOOKUP does. A hit whose Outcome cell is blank leaves the row empty,
+    # so a later pair can still fill it. Blank is the unresolved marker while
+    # the steps run; it becomes Not Found once they are all done.
+    def outcome_fill(src, cols, default):
+        out_col = col_of(src, ["Outcome"], 6)
+        vals = (src[out_col].astype("string").str.strip() if out_col is not None
+                else pd.Series(default, index=src.index))
+        for b in ident:            # ident keeps ID_COLS order: S, then AD, then AG
+            for c in cols:
+                if c not in src.columns:
+                    continue
+                k = norm(src[c])
+                ok = k.notna()
+                first = dict(zip(k[ok][::-1], vals[ok][::-1]))   # reversed -> first row wins
+                hit = ident[b].map(first)
+                fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
+                base.loc[fill, COL_OUTCOME] = hit[fill]
+                log(f"    {b} <- {c}: {int(hit.notna().sum())} matched, {int(fill.sum())} set")
 
-    step("2.1", "Submitted Data (false_login)", false_login is not None)
+    step("2.1", "false_login (Outcome from its column G)", false_login is not None)
     if false_login is not None:
-        set_outcome(matched(false_login, FALSE_LOGIN_COLS), "Submitted Data")
+        outcome_fill(false_login, FALSE_LOGIN_COLS, "Submitted Data")
 
-    step("2.2", "Clicked Link (false_login_sso)", false_login_sso is not None)
+    step("2.2", "false_login_sso (Outcome from its column G)", false_login_sso is not None)
     if false_login_sso is not None:
-        set_outcome(matched(false_login_sso, FALSE_LOGIN_SSO_COLS), "Clicked Link")
+        outcome_fill(false_login_sso, FALSE_LOGIN_SSO_COLS, "Clicked Link")
     snap("Step2_FalseLogin", base)
 
     # step 3: Employee Email against To (column C), taking Log Type (column O).
@@ -407,7 +405,8 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
 TRACE_READS = {"false_login": FALSE_LOGIN_COLS, "false_login_sso": FALSE_LOGIN_SSO_COLS,
                "mimecast": ["To"], "o365": ["SenderAddress"], "soc": ["User"],
                "gophish": ["email"], "gophish_de": ["email"]}
-TRACE_VALS = {"mimecast": "Log Type", "o365": "Reported", "soc": "reported",
+TRACE_VALS = {"false_login": "Outcome", "false_login_sso": "Outcome",
+              "mimecast": "Log Type", "o365": "Reported", "soc": "reported",
               "gophish": "message", "gophish_de": "message"}
 
 
@@ -555,9 +554,12 @@ def fixtures():
     base = pd.DataFrame([base_row(n, "Germany" if n.startswith("de_") else "India") for n in names])
 
     # 2.1 matches on the Saviynt identity, 2.2 on the AD one - both must work.
-    # de_keep already has an Outcome, so step 6 must leave it alone
-    false_login = pd.DataFrame({"Email (SSO)": ["submitted@sso.x.com", "de_keep@sso.x.com"]})
-    false_login_sso = pd.DataFrame({"Email": ["Clicked <CLICKED@AD.X.COM>"]})
+    # de_keep already has an Outcome, so step 6 must leave it alone. The value
+    # written is each row's own Outcome cell, not a constant per file.
+    false_login = pd.DataFrame({"Email (SSO)": ["submitted@sso.x.com", "de_keep@sso.x.com"],
+                                "Outcome": ["Submitted Data", "Submitted Data"]})
+    false_login_sso = pd.DataFrame({"Email": ["Clicked <CLICKED@AD.X.COM>"],
+                                    "Outcome": ["Clicked Link"]})
     # "submitted" is here too and must keep Submitted Data; "escalated" has three
     # rows and must end on the furthest of them
     mimecast = pd.DataFrame({
@@ -661,6 +663,23 @@ def check_outcome_pairs():
     assert both(mimecast=mm) == ["Email Sent", "Email Sent"]
 
 
+def check_outcome_copy():
+    """Step 2 copies each row's own Outcome cell: the first matching row wins
+    (XLOOKUP), a blank cell leaves the row open for a later pair, and the pair
+    order is S->D, S->E, then the SSO identities."""
+    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com", "c@x.com"],
+                         "SSOUPN as per Saviynt": ["a@sso.x.com", "b@sso.x.com", "c@sso.x.com"],
+                         "SSOUPN as per AD (O365)": ["a@ad.x.com", "b@ad.x.com", "c@ad.x.com"]})
+    fl = pd.DataFrame({
+        "Username":    ["a@x.com", "a@x.com", "c@x.com", "c@sso.x.com", "x"],
+        "Email (SSO)": ["x",       "x",       "x",       "x",           "b@sso.x.com"],
+        "Outcome":     ["Weird Value", "Second Row", "", "Late", "From E"]})
+    final, _ = run(base, false_login=fl, log=lambda *_: None)
+    # a: first row wins, not the second; b: found via Saviynt x Email (SSO);
+    # c: its S->D hit had a blank Outcome, so the AD->D pair filled it
+    assert list(final[COL_OUTCOME]) == ["Weird Value", "From E", "Late"], list(final[COL_OUTCOME])
+
+
 def check_gophish_file_order():
     """4.1 runs before 4.2, so a user named by both files keeps the non-German
     value even when the German file would have given a different one."""
@@ -734,6 +753,7 @@ def check_mimecast_columns():
 def selftest():
     check_read_any()
     check_outcome_pairs()
+    check_outcome_copy()
     check_lookup_fallback()
     check_mimecast_columns()
     check_step5_spelling()
