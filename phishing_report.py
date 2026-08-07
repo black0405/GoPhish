@@ -17,8 +17,9 @@ The steps built so far, over the whole Userbase file:
                            column only, no country filter anywhere
     5    Reconcile         Outcome User Click or Not Found, and Reported Yes
                            -> Email Opened
-    6    Leftovers         Outcome still Not Found or User Click -> that row's
-                           GoPhish value, else Email Sent - no country filter
+    6    Leftovers         Country = Germany rows still Not Found or User Click
+                           -> that row's GoPhish value; every other leftover
+                           -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -365,16 +366,25 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
             + ", ".join(f"{v!r} ({n})" for v, n in seen.items()))
     snap("Step5_Reconcile", base)
 
-    # --- step 6: any Outcome still reading Not Found or User Click takes that
-    # row's GoPhish value - no country filter. Whoever has no GoPhish value
-    # either falls back to Email Sent; anyone who reported the mail was already
-    # lifted to Email Opened by step 5, so what is left is the unreported.
-    log("  6   leftover Outcome takes the GoPhish value, else Email Sent")
-    take = unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
+    # --- step 6: Country = Germany rows whose Outcome still reads Not Found or
+    # User Click take that row's GoPhish value; every other leftover - the rest
+    # of Germany included, once its GoPhish says Not Found - becomes Email
+    # Sent. Anyone who reported the mail was already lifted by step 5.
+    log("  6   Germany leftovers take the GoPhish value, the rest Email Sent")
+    # Country by name only - the generated columns are appended to the base, so
+    # a positional fallback could land on one of those instead of column B
+    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
+    if country is None:
+        de = pd.Series(False, index=base.index)
+        log("    ! base has no Country column - no row takes the GoPhish value")
+    else:
+        de = base[country].astype(str).str.strip().str.casefold().eq("germany")
+    take = de & unsettled() & ~base[COL_GOPHISH].isin(["", NOT_FOUND])
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
-    log(f"    {int(take.sum())} took their GoPhish value, {int(sent.sum())} -> Email Sent")
+    log(f"    Germany rows: {int(de.sum())}, {int(take.sum())} took their GoPhish value, "
+        f"{int(sent.sum())} -> Email Sent")
     snap("Step6_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
@@ -735,10 +745,11 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # GoPhish never writes Outcome directly: a leftover row meets its GoPhish
-    # value only in step 6, and step 5's report-lift runs first - so a reported
-    # Not Found is Email Opened even when GoPhish says Clicked Link
-    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"]})
+    # GoPhish never writes Outcome directly: a German leftover row meets its
+    # GoPhish value only in step 6, and step 5's report-lift runs first - so a
+    # reported Not Found is Email Opened even when GoPhish says Clicked Link
+    base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"],
+                         "Country": ["Germany", "Germany"]})
     gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
                        "time": ["09:00"] * 2, "message": ["Clicked Link"] * 2,
                        "details": ["Windows"] * 2})
