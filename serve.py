@@ -30,6 +30,19 @@ ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 RUNS = ROOT / "runs"
 
+
+def git_rev():
+    """Short commit hash, so the page can show which code the server runs."""
+    try:
+        import subprocess
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                              capture_output=True, text=True, timeout=5).stdout.strip() or "?"
+    except Exception:
+        return "?"
+
+
+REV = git_rev()
+
 # key -> the column read_any looks for when the export has banner rows above the header
 NEED = {"base": "Employee Email", "mimecast": "To", "o365": "SenderAddress", "soc": "User",
         "false_login": "Username", "false_login_sso": "Email",
@@ -203,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path = url.path
         if path == "/health":
-            return self.send(200, json.dumps({"ok": True}))
+            return self.send(200, json.dumps({"ok": True, "rev": REV}))
         if path == "/status":
             sid = parse_qs(url.query).get("sid", [""])[0]
             return self.send(200, json.dumps(JOBS.get(sid, {"state": "unknown"})))

@@ -56,7 +56,9 @@ async function ping() {
   }
   try {
     const r = await fetch('/health', { cache: 'no-store' });
-    setOnline((await r.json()).ok === true);
+    const h = await r.json();
+    setOnline(h.ok === true);
+    if (h.rev) $('srv').textContent = `server ${h.rev}`;
   } catch {
     setOnline(false, 'serve.py is not reachable. Start it with:  python serve.py  then reload this page.');
   }
