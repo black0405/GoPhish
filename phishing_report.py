@@ -19,9 +19,9 @@ The steps built so far, over the whole Userbase file:
                            Submitted Data takes it - beats the reported lift
     6    Reported          leftover + Reported Yes -> Email Opened; an already
                            established Clicked Link stands even when reported
-    7    Leftovers         Country = Germany leftovers take their GoPhish value
-                           when the GERMAN file supplied it; every other
-                           leftover -> Email Sent
+    7    Leftovers         leftovers take their GoPhish value when it came from
+                           their own country's file (German file for Germany
+                           rows, non-German for the rest); else Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -378,8 +378,9 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #   6. Reported leftovers lift to Email Opened. An Outcome an earlier step
     #      already established - a Clicked Link from the sso file, say - stands
     #      even when the user reported.
-    #   7. Germany leftovers take their GoPhish value when the GERMAN file
-    #      supplied it; every other leftover becomes Email Sent.
+    #   7. Leftovers take their GoPhish value when it came from the file
+    #      matching their country - German file for Germany rows, non-German
+    #      file for everyone else; the rest become Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
@@ -400,26 +401,30 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
     snap("Step6_Reported", base)
 
-    log("  7   Germany leftovers take their German-file GoPhish value, the rest Email Sent")
+    log("  7   leftovers take the GoPhish value from their OWN file, the rest Email Sent")
     # Country by name only - the generated columns are appended to the base, so
     # a positional fallback could land on one of those instead of column B
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
     if country is None:
-        is_de = pd.Series(False, index=base.index)
+        pair_ok = gp_src.ne("")
         if gp_src.ne("").any():
-            log("    ! base has no Country column - the Germany take touches no row")
+            log("    ! base has no Country column - values count whatever file they came from")
     else:
         is_de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-    # only a value the GERMAN file supplied counts here; a German user whose
-    # value came from the non-German file falls through to Email Sent
-    take = unsettled() & is_de & gp_src.eq("de") & gp_val()
+        # each side only accepts its own file's value: German file for Germany
+        # rows, non-German file for everyone else - a wrong-file value falls
+        # through to Email Sent
+        pair_ok = (gp_src.eq("de") & is_de) | (gp_src.eq("non_de") & ~is_de)
+    take = unsettled() & pair_ok & gp_val()
+    wrong = int((unsettled() & ~pair_ok & gp_val()).sum())
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
     base.loc[take, COL_SRC] = "7-gophish-take"
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
     base.loc[sent, COL_SRC] = "7-email-sent"
-    log(f"    Germany rows: {int(is_de.sum())}, {int(take.sum())} took their German-file value, "
-        f"{int(sent.sum())} -> Email Sent")
+    log(f"    {int(take.sum())} took their own file's value"
+        + (f", {wrong} skipped - value from the other country's file" if wrong else "")
+        + f", {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
@@ -793,13 +798,13 @@ def check_step5_spelling():
     final, _ = run(base, gophish_de=de_gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Submitted Data", "Email Opened"], list(final[COL_OUTCOME])
 
-    # a non-German leftover never takes a GoPhish value - Email Sent
+    # a non-German leftover takes its non-German-file value
     base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
     mm2 = pd.DataFrame({"To": ["c@x.com"], "Log Type": ["User Click"]})
     gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
                         "message": ["Clicked Link"], "details": ["Windows"]})
     final, _ = run(base, gophish=gp2, mimecast=mm2, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
     # a German leftover takes only a GERMAN-file value: the same click from the
     # non-German file falls through to Email Sent
