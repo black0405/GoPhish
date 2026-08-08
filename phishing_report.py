@@ -63,6 +63,11 @@ COL_SOC = "Reported to SOC"
 COL_REPORTED = "Reported (Yes/No)"
 COL_PHISHED = "Phished Yes/No"  # header per "files & column.txt"; steps.txt writes it "Phished (Yes/No)"
 NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISHED]
+# diagnostics: which step wrote each row's Outcome, and which events file the
+# GoPhish value came from - they ride along in the report and the compare
+COL_SRC = "Outcome Step"
+COL_GPFILE = "GoPhish File"
+DIAG_COLS = [COL_SRC, COL_GPFILE]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
 # each outcome step is every ID_COLS x <these> pair - the mapping tables in the SOP
@@ -192,7 +197,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     snap = snap or (lambda *_: None)
     base = base.copy()
     books = {}
-    for c in NEW_COLS:
+    for c in NEW_COLS + DIAG_COLS:
         base[c] = ""
 
     ident = {c: norm(base[c]) for c in ID_COLS if c in base.columns}
@@ -258,7 +263,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # as XLOOKUP does. A hit whose Outcome cell is blank leaves the row empty,
     # so a later pair can still fill it. Blank is the unresolved marker while
     # the steps run; it becomes Not Found once they are all done.
-    def outcome_fill(src, cols, default):
+    def outcome_fill(src, cols, default, tag):
         out_col = col_of(src, ["Outcome"], 6)
         vals = (src[out_col].astype("string").str.strip() if out_col is not None
                 else pd.Series(default, index=src.index))
@@ -272,15 +277,16 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
                 hit = ident[b].map(first)
                 fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
                 base.loc[fill, COL_OUTCOME] = hit[fill]
+                base.loc[fill, COL_SRC] = tag
                 log(f"    {b} <- {c}: {int(hit.notna().sum())} matched, {int(fill.sum())} set")
 
     step("2.1", "false_login (Outcome from its column G)", false_login is not None)
     if false_login is not None:
-        outcome_fill(false_login, FALSE_LOGIN_COLS, "Submitted Data")
+        outcome_fill(false_login, FALSE_LOGIN_COLS, "Submitted Data", "2.1")
 
     step("2.2", "false_login_sso (Outcome from its column G)", false_login_sso is not None)
     if false_login_sso is not None:
-        outcome_fill(false_login_sso, FALSE_LOGIN_SSO_COLS, "Clicked Link")
+        outcome_fill(false_login_sso, FALSE_LOGIN_SSO_COLS, "Clicked Link", "2.2")
     snap("Step2_FalseLogin", base)
 
     # --- step 3: Mimecast - runs before GoPhish, so its value wins for anyone
@@ -296,6 +302,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
         fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
         base.loc[fill, COL_OUTCOME] = hit[fill]
+        base.loc[fill, COL_SRC] = "3-mimecast"
         log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
         log(f"    -> {int(fill.sum())} set, "
             f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
@@ -352,6 +359,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         rest = base[COL_GOPHISH].eq("")
         base.loc[rest, COL_GOPHISH] = NOT_FOUND
         log(f"    {int(rest.sum())} rows matched by neither file -> {NOT_FOUND}")
+    base[COL_GPFILE] = gp_src
 
     # Blank means the outcome sources were never supplied; once any of them was,
     # a row nothing matched has been looked up and missed, same as the reporting
@@ -377,6 +385,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log("  5   leftovers with GoPhish Submitted Data take it")
     take = unsettled() & base[COL_GOPHISH].eq("Submitted Data")
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+    base.loc[take, COL_SRC] = "5-gophish-take"
     log(f"    {int(take.sum())} took Submitted Data")
     snap("Step5_Submitted", base)
 
@@ -384,14 +393,17 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     yes = base[COL_REPORTED].eq("Yes")
     fix = (unsettled() | base[COL_OUTCOME].eq("Clicked Link")) & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
+    base.loc[fix, COL_SRC] = "6-reported-lift"
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
     snap("Step6_Reported", base)
 
     log("  7   remaining leftovers take the GoPhish value, else Email Sent")
     take = unsettled() & gp_val()
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+    base.loc[take, COL_SRC] = "7-gophish-take"
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
+    base.loc[sent, COL_SRC] = "7-email-sent"
     log(f"    {int(take.sum())} took their GoPhish value, {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
 
@@ -836,6 +848,13 @@ def selftest():
     # with no outcome source at all, Outcome is blank and Phished stays blank
     blank, _ = run(pd.DataFrame({"Employee Email": ["a@x.com"]}), log=lambda *_: None)
     assert list(blank[COL_PHISHED]) == [""], list(blank[COL_PHISHED])
+    # the diagnostics name the writing step and the value's file
+    assert f.loc["submitted", COL_SRC] == "2.1", f.loc["submitted", COL_SRC]
+    assert f.loc["opened", COL_SRC] == "3-mimecast", f.loc["opened", COL_SRC]
+    assert f.loc["de_sub", COL_SRC] == "5-gophish-take", f.loc["de_sub", COL_SRC]
+    assert f.loc["reported", COL_SRC] == "6-reported-lift", f.loc["reported", COL_SRC]
+    assert f.loc["untouched", COL_SRC] == "7-email-sent", f.loc["untouched", COL_SRC]
+    assert f.loc["de_sub", COL_GPFILE] == "de" and f.loc["clicked", COL_GPFILE] == "non_de"
     assert f.loc["reported", COL_REPORTED] == "Yes"
     assert f.loc["opened", COL_REPORTED] == "No"
     # a hit carries the report file's own value; a miss says Not Found

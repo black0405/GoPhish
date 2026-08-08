@@ -218,6 +218,7 @@ function render(res) {
       const out = await r.json();
       if (!r.ok) throw new Error(out.error || r.statusText);
       const lines = [
+        `compared against the run from server ${out.rev || '?'}`,
         `rows: generated ${out.rows_mine}, yours ${out.rows_yours}, matched on Employee Email ${out.matched}`,
         `only in generated: ${out.only_mine}, only in yours: ${out.only_yours}`,
         ...Object.entries(out.cols).map(([c, n]) => `${c}: ${n ? `${n} rows differ` : 'identical'}`),

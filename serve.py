@@ -167,7 +167,7 @@ def do_run(payload, logs=None):
     def snap(name, df):
         keep = [c for c in df.columns
                 if str(c).strip().casefold() in ("employee name", "country")
-                or c in pr.ID_COLS] + pr.NEW_COLS
+                or c in pr.ID_COLS] + pr.NEW_COLS + pr.DIAG_COLS
         df[keep].to_csv(run / f"{name}.csv", index=False)
         steps.append(f"{name}.csv")
 
@@ -241,14 +241,16 @@ def compare(sess):
         any_diff |= diff
         cols[c] = int(diff.sum())
 
-    # Country rides along so a mismatch pattern that splits on it is visible
+    # Country and the diagnostics ride along so a mismatch pattern is visible:
+    # which step wrote my Outcome, and which events file the GoPhish value used
     extra = [c for c in mine.columns if str(c).strip().casefold() == "country"][:1]
+    extra += [c for c in pr.DIAG_COLS if c in mine.columns]
     keep = [key] + extra + [x for c in pairs for x in (c, f"yours::{c}")]
     mism = merged.loc[any_diff, keep].rename(columns={f"yours::{c}": f"{c} (yours)" for c in pairs})
     name = "Compare_Mismatches.csv"
     mism.to_csv(sess["dir"] / name, index=False)
 
-    return {"rows_mine": len(m), "rows_yours": len(t), "matched": len(merged),
+    return {"rev": REV, "rows_mine": len(m), "rows_yours": len(t), "matched": len(merged),
             "only_mine": len(m) - len(merged), "only_yours": len(t) - len(merged),
             "cols": cols, "diff_rows": int(any_diff.sum()),
             "file": f"/runs/{sess['dir'].name}/{name}"}
