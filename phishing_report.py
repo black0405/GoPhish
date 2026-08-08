@@ -19,9 +19,9 @@ The steps built so far, over the whole Userbase file:
                            Submitted Data takes it - beats the reported lift
     6    Reported          leftover + Reported Yes -> Email Opened; an already
                            established Clicked Link stands even when reported
-    7    Leftovers         Not Found leftovers take their GoPhish value when it
-                           came from their own country's file; User Click
-                           leftovers and the rest -> Email Sent
+    7    Leftovers         leftovers take their GoPhish value when it came from
+                           their own country's file and Employee Email equals
+                           the AD SSOUPN; the rest -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -378,10 +378,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #   6. Reported leftovers lift to Email Opened. An Outcome an earlier step
     #      already established - a Clicked Link from the sso file, say - stands
     #      even when the user reported.
-    #   7. NOT FOUND leftovers take their GoPhish value when it came from the
-    #      file matching their country - German file for Germany rows,
-    #      non-German file for everyone else. A User Click leftover and every
-    #      other remainder becomes Email Sent.
+    #   7. Leftovers take their GoPhish value when it came from the file
+    #      matching their country AND the row's Employee Email equals its AD
+    #      SSOUPN (the manual take was keyed on the UPN identity, so legacy
+    #      domains never took). The rest become Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
@@ -416,18 +416,22 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         # rows, non-German file for everyone else - a wrong-file value falls
         # through to Email Sent
         pair_ok = (gp_src.eq("de") & is_de) | (gp_src.eq("non_de") & ~is_de)
-    # the take is for Not Found ONLY - a User Click leftover means Mimecast saw
-    # them, and an unreported one settles to Email Sent, not their GoPhish value
-    open_nf = base[COL_OUTCOME].eq(NOT_FOUND)
-    take = open_nf & pair_ok & gp_val()
-    wrong = int((open_nf & ~pair_ok & gp_val()).sum())
+    # the manual take was keyed on the UPN identity, so a row whose Employee
+    # Email differs from its AD SSOUPN (legacy/subsidiary domains) never took -
+    # match that: the take needs the two identities to agree
+    ad = ident.get("SSOUPN as per AD (O365)")
+    same_id = (ident["Employee Email"].eq(ad).fillna(False) if ad is not None
+               else pd.Series(True, index=base.index))
+    take = unsettled() & pair_ok & gp_val() & same_id
+    wrong = int((unsettled() & gp_val() & ~(pair_ok & same_id)).sum())
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
     base.loc[take, COL_SRC] = "7-gophish-take"
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
     base.loc[sent, COL_SRC] = "7-email-sent"
     log(f"    {int(take.sum())} took their own file's value"
-        + (f", {wrong} skipped - value from the other country's file" if wrong else "")
+        + (f", {wrong} skipped - wrong file or Employee Email differs from the AD SSOUPN"
+           if wrong else "")
         + f", {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
 
@@ -802,8 +806,9 @@ def check_step5_spelling():
     final, _ = run(base, gophish_de=de_gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Submitted Data", "Email Opened"], list(final[COL_OUTCOME])
 
-    # a non-German NOT FOUND leftover takes its non-German-file value; the same
-    # user reading User Click (Mimecast saw them) settles to Email Sent instead
+    # a non-German leftover (Not Found or User Click) takes its own-file value
+    # when the identities agree; a legacy row whose Employee Email differs from
+    # the AD SSOUPN never takes
     base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
     mm2 = pd.DataFrame({"To": ["c@x.com"], "Log Type": ["User Click"]})
     gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
@@ -811,6 +816,10 @@ def check_step5_spelling():
     final, _ = run(base, gophish=gp2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
     final, _ = run(base, gophish=gp2, mimecast=mm2, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
+    legacy = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"],
+                           "SSOUPN as per AD (O365)": ["c@legacy.x.com"]})
+    final, _ = run(legacy, gophish=gp2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
 
     # a German Not Found leftover takes only a GERMAN-file value: the same
