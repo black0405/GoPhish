@@ -15,12 +15,12 @@ The steps built so far, over the whole Userbase file:
     4.2  GoPhish German    the same split, filling Submitted Data, Clicked
                            Link, Email Sent order over what 4.1 left; GoPhish
                            column only, no country filter anywhere
-    5    GoPhish take      leftover (Not Found / User Click) with an acted
-                           GoPhish value (Submitted Data / Clicked Link, never
-                           Email Sent) takes it - only from the file matching
-                           the row's country; runs before the reported lift
-    6    Reported          leftover + Reported Yes -> Email Opened
-    7    Leftovers         the rest -> Email Sent
+    5    Submitted         leftover (Not Found / User Click) whose GoPhish says
+                           Submitted Data takes it - beats the reported lift
+    6    Reported          Reported Yes + (leftover or Clicked Link) -> Email
+                           Opened; only Submitted Data survives a report
+    7    Leftovers         the rest take their GoPhish value, any country;
+                           whoever has none -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -364,45 +364,35 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # Click. Order matters and each pass only touches what is still left:
     #   5. A GoPhish Submitted Data is definitive - it wins even over the
     #      reported lift (they submitted, then reported). Any country.
-    #   5. A leftover with an ACTED GoPhish value - Submitted Data or Clicked
-    #      Link, never Email Sent - takes it, but only when the value came from
-    #      the file matching the row's country: German file for Germany rows,
-    #      non-German file for everyone else. Runs BEFORE the reported lift, so
-    #      a reporter with real click/submit evidence keeps it.
-    #   6. Reported rows still leftover lift to Email Opened.
-    #   7. Whatever is still leftover becomes Email Sent.
+    #   5. A GoPhish Submitted Data is definitive - it wins even over the
+    #      reported lift (they submitted, then reported). Any country.
+    #   6. A reporter's click is doubted, whatever step wrote it: reported rows
+    #      still leftover OR reading Clicked Link lift to Email Opened. Only a
+    #      Submitted Data survives a report.
+    #   7. Remaining leftovers take their GoPhish value, any country; whoever
+    #      has none becomes Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
+    gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
-    log("  5   leftovers take an acted GoPhish value from their own file")
-    # Country by name only - the generated columns are appended to the base, so
-    # a positional fallback could land on one of those instead of column B
-    country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    if country is None:
-        pair_ok = pd.Series(True, index=base.index)
-        if gp_src.ne("").any():
-            log("    ! base has no Country column - values count whatever file they came from")
-    else:
-        is_de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-        pair_ok = (gp_src.eq("de") & is_de) | (gp_src.eq("non_de") & ~is_de)
-    take = unsettled() & base[COL_GOPHISH].isin(["Submitted Data", "Clicked Link"]) & pair_ok
-    wrong_file = int((unsettled() & base[COL_GOPHISH].isin(["Submitted Data", "Clicked Link"])
-                      & ~pair_ok).sum())
+    log("  5   leftovers with GoPhish Submitted Data take it")
+    take = unsettled() & base[COL_GOPHISH].eq("Submitted Data")
     base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
-    log(f"    {int(take.sum())} took their GoPhish value"
-        + (f", {wrong_file} skipped - value from the other country's file" if wrong_file else ""))
-    snap("Step5_GoPhishTake", base)
+    log(f"    {int(take.sum())} took Submitted Data")
+    snap("Step5_Submitted", base)
 
-    log("  6   reported leftovers -> Email Opened")
+    log("  6   reported leftovers and reported clickers -> Email Opened")
     yes = base[COL_REPORTED].eq("Yes")
-    fix = unsettled() & yes
+    fix = (unsettled() | base[COL_OUTCOME].eq("Clicked Link")) & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
     snap("Step6_Reported", base)
 
-    log("  7   remaining leftovers -> Email Sent")
+    log("  7   remaining leftovers take the GoPhish value, else Email Sent")
+    take = unsettled() & gp_val()
+    base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
-    log(f"    {int(sent.sum())} -> Email Sent")
+    log(f"    {int(take.sum())} took their GoPhish value, {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
@@ -764,8 +754,8 @@ def check_step5_spelling():
     # Email Sent (no GoPhish value to take).
     assert list(final[COL_OUTCOME]) == ["Email Opened"] * 3 + ["Email Sent"], list(final[COL_OUTCOME])
 
-    # the GoPhish take runs before the reported lift: real submit AND click
-    # evidence both survive a report when the value came from the right file
+    # a GoPhish Submitted Data beats the reported lift; a GoPhish Clicked Link
+    # does not - a reporter's click is doubted, their submit is not
     base = pd.DataFrame({"Employee Email": ["a@x.com", "b@x.com"],
                          "Country": ["Germany", "Germany"]})
     de_gp = pd.DataFrame({"campaign_id": ["1", "1"], "email": ["a@x.com", "b@x.com"],
@@ -774,9 +764,9 @@ def check_step5_spelling():
     o365 = pd.DataFrame({"SenderAddress": ["a@x.com", "b@x.com"], "Reported": ["o365", "o365"]})
     none_of_them = pd.DataFrame({"To": ["nobody@x.com"], "Log Type": ["Email Sent"]})
     final, _ = run(base, gophish_de=de_gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Submitted Data", "Clicked Link"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Submitted Data", "Email Opened"], list(final[COL_OUTCOME])
 
-    # a non-German leftover takes its value from the non-German file
+    # an unreported leftover takes its GoPhish value whatever the country
     base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
     mm2 = pd.DataFrame({"To": ["c@x.com"], "Log Type": ["User Click"]})
     gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
@@ -784,23 +774,11 @@ def check_step5_spelling():
     final, _ = run(base, gophish=gp2, mimecast=mm2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
-    # ...but a value from the WRONG country's file never enters Outcome: a
-    # non-German user with only a German-file click falls to the reported lift,
-    # and a German user with only a non-German-file click to Email Sent
-    de_gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
-                           "message": ["Clicked Link"], "Sort": [""], "details": ["Windows"]})
-    soc2 = pd.DataFrame({"User": ["c@x.com"], "reported": ["soc-support"]})
-    final, _ = run(base, gophish_de=de_gp2, mimecast=mm2, soc=soc2, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
-    base_de = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["Germany"]})
-    final, _ = run(base_de, gophish=gp2, mimecast=mm2, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
-
-    # a reported clicker from step 2 keeps the click - the lift touches only
-    # rows still reading Not Found or User Click
+    # a reported clicker lifts to Email Opened even when step 2 wrote the click
     sso2 = pd.DataFrame({"Email": ["c@x.com"], "Outcome": ["Clicked Link"]})
+    soc2 = pd.DataFrame({"User": ["c@x.com"], "reported": ["soc-support"]})
     final, _ = run(base, false_login_sso=sso2, soc=soc2, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
+    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
@@ -828,7 +806,7 @@ def selftest():
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
     assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
-                     "Step5_GoPhishTake", "Step6_Reported", "Step7_Leftovers"], snaps
+                     "Step5_Submitted", "Step6_Reported", "Step7_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
