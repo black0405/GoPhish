@@ -2,14 +2,14 @@
 
 // the steps built so far: the reporting lookups, then Submitted Data.
 const SOURCES = [
-  ['base',        'Userbase file',          'required'],
-  ['o365',        'User Reported — O365',   'SenderAddress (C) → Reported (K)'],
-  ['soc',         'User Reported — SOC',    'User (C) → reported (D)'],
-  ['false_login', 'False login — Submitted', 'Username / Email (SSO) → its Outcome (G)'],
-  ['false_login_sso', 'False login SSO — Clicked', 'Email → its Outcome (G)'],
-  ['mimecast', 'Mimecast activity', 'To (C) → Log Type (N)'],
-  ['gophish', 'GoPhish events — non-German', 'email (B) → message (D), GoPhish column only'],
-  ['gophish_de', 'GoPhish events — German', 'submitted, clicked, sent order; GoPhish column only'],
+  ['base',        'Userbase',                    'employee master list — required'],
+  ['o365',        'User Reported — O365',        'report-button export'],
+  ['soc',         'User Reported — SOC',         'SOC-Support export'],
+  ['false_login', 'False Login — Submitted',     'submitted-credentials export'],
+  ['false_login_sso', 'False Login — Clicked',   'clicked-link (SSO) export'],
+  ['mimecast',    'Mimecast',                    'activity log'],
+  ['gophish',     'GoPhish — non-German',        'campaign events'],
+  ['gophish_de',  'GoPhish — German',            'campaign events'],
 ];
 
 let sid = crypto.randomUUID();
