@@ -19,9 +19,9 @@ The steps built so far, over the whole Userbase file:
                            Submitted Data takes it - beats the reported lift
     6    Reported          leftover + Reported Yes -> Email Opened; an already
                            established Clicked Link stands even when reported
-    7    Leftovers         leftovers take their FIRST event row (file order)
-                           from their own country's file; the rest -> Email
-                           Sent. The GoPhish column keeps its sheet priority.
+    7    Leftovers         leftovers take the GoPhish column value as-is,
+                           Germany rows first then the rest; whoever the
+                           column left Not Found -> Email Sent
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -316,19 +316,8 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # the GoPhish column is filled from those sheets, each pass only filling
     # rows the pass before it left unresolved. Outcome meets these values only
     # through step 6, which hands a leftover row its GoPhish value.
-    # which file a row's GoPhish value came from ("non_de" / "de"), and each
-    # user's FIRST event row per file - the step 7 take is an XLOOKUP into the
-    # events, so the first row in file order wins there, not the sheet priority
-    # the GoPhish column uses
+    # which file a row's GoPhish value came from ("non_de" / "de") - diagnostics
     gp_src = pd.Series("", index=base.index)
-    gp_first = {"non_de": pd.Series(pd.NA, index=base.index, dtype="string"),
-                "de": pd.Series(pd.NA, index=base.index, dtype="string")}
-
-    def first_event(kept, em, message, tag):
-        k = norm(kept[em])
-        ok = k.notna()
-        gp_first[tag] = ident["Employee Email"].map(
-            dict(zip(k[ok][::-1], message[ok][::-1]))).astype("string")
 
     def fill_gophish(frames, order, em, message, tag):
         """Each sheet in turn, filling only the rows still unresolved - the same
@@ -352,7 +341,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         books[BOOK_GOPHISH], frames, em, message, kept = gophish_split(
             gophish, GOPHISH_EVENTS, GOPHISH_DETAILS_IDX, log)
         fill_gophish(frames, GOPHISH_EVENTS, em, message, "non_de")
-        first_event(kept, em, message, "non_de")
 
     # 4.2: the German file is split the same way but into four sheets, and fills
     # in a different order - Submitted Data first, then Clicked Link, then Email
@@ -362,7 +350,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         books[BOOK_GOPHISH_DE], frames, em, message, kept = gophish_split(
             gophish_de, GOPHISH_DE_EVENTS, GOPHISH_DE_DETAILS_IDX, log)
         fill_gophish(frames, GOPHISH_DE_FILL, em, message, "de")
-        first_event(kept, em, message, "de")
 
     # Blank is the unresolved marker while 4.1 and 4.2 run. Whoever neither file
     # named reads Not Found - including anyone whose only events were Linux rows
@@ -391,9 +378,9 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #   6. Reported leftovers lift to Email Opened. An Outcome an earlier step
     #      already established - a Clicked Link from the sso file, say - stands
     #      even when the user reported.
-    #   7. Leftovers take their FIRST event row (file order, XLOOKUP-style)
-    #      from the file matching their country - German file for Germany
-    #      rows, non-German for the rest. The rest become Email Sent.
+    #   7. Leftovers take the GoPhish COLUMN value as-is - the Germany rows
+    #      first, then everyone else. Whoever the column left Not Found
+    #      becomes Email Sent.
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
@@ -414,29 +401,23 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
     snap("Step6_Reported", base)
 
-    log("  7   leftovers take their FIRST event from their own file, the rest Email Sent")
+    log("  7   leftovers take the GoPhish column value, Germany first, the rest Email Sent")
     # Country by name only - the generated columns are appended to the base, so
     # a positional fallback could land on one of those instead of column B
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
-    if country is None:
-        fv = gp_first["non_de"].fillna(gp_first["de"])
-        if fv.notna().any():
-            log("    ! base has no Country column - values count whatever file they came from")
-    else:
-        is_de = base[country].astype(str).str.strip().str.casefold().eq("germany")
-        # each side only reads its own file: German file for Germany rows,
-        # non-German file for everyone else
-        fv = gp_first["de"].where(is_de, gp_first["non_de"])
-    # XLOOKUP semantics: the value is the user's FIRST event row in the file,
-    # not the GoPhish column's clicked-first sheet priority - a user whose rows
-    # read Email Sent then Clicked Link settles to Email Sent here
-    take = unsettled() & fv.notna() & fv.ne("")
-    base.loc[take, COL_OUTCOME] = fv[take]
-    base.loc[take, COL_SRC] = "7-gophish-take"
+    is_de = (pd.Series(False, index=base.index) if country is None
+             else base[country].astype(str).str.strip().str.casefold().eq("germany"))
+    # the Germany pass runs first, then everyone else - both copy the GoPhish
+    # COLUMN value as-is for any leftover the column resolved
+    for side in (is_de, ~is_de):
+        take = side & unsettled() & gp_val()
+        base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
+        base.loc[take, COL_SRC] = "7-gophish-take"
     sent = unsettled()
     base.loc[sent, COL_OUTCOME] = "Email Sent"
     base.loc[sent, COL_SRC] = "7-email-sent"
-    log(f"    {int(take.sum())} took their first event, {int(sent.sum())} -> Email Sent")
+    took = int(base[COL_SRC].eq("7-gophish-take").sum())
+    log(f"    {took} took their GoPhish value, {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
@@ -810,10 +791,9 @@ def check_step5_spelling():
     final, _ = run(base, gophish_de=de_gp, o365=o365, mimecast=none_of_them, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Submitted Data", "Email Opened"], list(final[COL_OUTCOME])
 
-    # a non-German leftover (Not Found or User Click) takes its FIRST event
-    # from the non-German file - a user whose rows read Email Sent then
-    # Clicked Link settles to Email Sent, though the GoPhish column (sheet
-    # priority) still says Clicked Link
+    # step 7 copies the GoPhish COLUMN value for any leftover (Not Found or
+    # User Click), whatever file filled it - the column's clicked-first sheet
+    # priority carries through even when Email Sent came first in the file
     base = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["India"]})
     mm2 = pd.DataFrame({"To": ["c@x.com"], "Log Type": ["User Click"]})
     gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
@@ -827,16 +807,9 @@ def check_step5_spelling():
                         "details": ["Windows"] * 2})
     final, _ = run(base, gophish=two, log=lambda *_: None)
     assert list(final[COL_GOPHISH]) == ["Clicked Link"], list(final[COL_GOPHISH])
-    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
-
-    # a German Not Found leftover takes only a GERMAN-file value: the same
-    # click from the non-German file falls through to Email Sent
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
     base_de = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["Germany"]})
     final, _ = run(base_de, gophish=gp2, log=lambda *_: None)
-    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
-    de_gp2 = pd.DataFrame({"campaign_id": ["1"], "email": ["c@x.com"], "time": ["09:00"],
-                           "message": ["Clicked Link"], "Sort": [""], "details": ["Windows"]})
-    final, _ = run(base_de, gophish_de=de_gp2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
     # a reported clicker KEEPS the click step 2 established - the lift only
