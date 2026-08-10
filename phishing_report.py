@@ -19,9 +19,10 @@ The steps built so far, over the whole Userbase file:
                            Submitted Data takes it - beats the reported lift
     6    Reported          leftover + Reported Yes -> Email Opened; an already
                            established Clicked Link stands even when reported
-    7    Leftovers         leftovers take the GoPhish column value as-is,
-                           Germany rows first then the rest; whoever the
-                           column left Not Found -> Email Sent
+    7    Leftovers         leftovers FOUND IN MIMECAST take the GoPhish column
+                           value as-is, Germany rows first then the rest; a
+                           leftover Mimecast never named -> Email Sent (a
+                           reported one was already lifted by step 6)
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -294,6 +295,9 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # --- step 3: Mimecast - runs before GoPhish, so its value wins for anyone
     # it names. Employee Email against To (column C), taking Log Type (column
     # N). Only fills rows step 2 left empty.
+    # who Mimecast names at all - step 7 only trusts a GoPhish value for these;
+    # with no Mimecast file the gate is off, so the take still works
+    mime_hit = pd.Series(mimecast is None, index=base.index)
     step("3", "Mimecast activity", mimecast is not None)
     if mimecast is not None:
         key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
@@ -302,6 +306,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         # row in the file, not the strongest event
         ok = k.notna()
         hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
+        mime_hit = hit.notna()
         fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
         base.loc[fill, COL_OUTCOME] = hit[fill]
         base.loc[fill, COL_SRC] = "3-mimecast"
@@ -378,9 +383,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #   6. Reported leftovers lift to Email Opened. An Outcome an earlier step
     #      already established - a Clicked Link from the sso file, say - stands
     #      even when the user reported.
-    #   7. Leftovers take the GoPhish COLUMN value as-is - the Germany rows
-    #      first, then everyone else. Whoever the column left Not Found
-    #      becomes Email Sent.
+    #   7. Leftovers FOUND IN MIMECAST take the GoPhish COLUMN value as-is -
+    #      the Germany rows first, then everyone else. A leftover Mimecast
+    #      never named keeps no GoPhish value: Email Sent (step 6 already
+    #      lifted the reported ones to Email Opened).
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
@@ -401,16 +407,17 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
     snap("Step6_Reported", base)
 
-    log("  7   leftovers take the GoPhish column value, Germany first, the rest Email Sent")
+    log("  7   leftovers Mimecast names take the GoPhish column value, Germany first, the rest Email Sent")
     # Country by name only - the generated columns are appended to the base, so
     # a positional fallback could land on one of those instead of column B
     country = next((c for c in base.columns if str(c).strip().casefold() == "country"), None)
     is_de = (pd.Series(False, index=base.index) if country is None
              else base[country].astype(str).str.strip().str.casefold().eq("germany"))
     # the Germany pass runs first, then everyone else - both copy the GoPhish
-    # COLUMN value as-is for any leftover the column resolved
+    # COLUMN value as-is, but only for a leftover Mimecast actually named;
+    # anyone Mimecast missed settles to Email Sent below whatever GoPhish says
     for side in (is_de, ~is_de):
-        take = side & unsettled() & gp_val()
+        take = side & unsettled() & gp_val() & mime_hit
         base.loc[take, COL_OUTCOME] = base.loc[take, COL_GOPHISH]
         base.loc[take, COL_SRC] = "7-gophish-take"
     sent = unsettled()
@@ -811,6 +818,16 @@ def check_step5_spelling():
     base_de = pd.DataFrame({"Employee Email": ["c@x.com"], "Country": ["Germany"]})
     final, _ = run(base_de, gophish=gp2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
+
+    # the Mimecast gate: with a Mimecast file present, a leftover it never
+    # named does NOT take its GoPhish value - Email Sent, or Email Opened
+    # once they reported
+    mm_other = pd.DataFrame({"To": ["other@x.com"], "Log Type": ["User Click"]})
+    final, _ = run(base, gophish=gp2, mimecast=mm_other, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
+    o365c = pd.DataFrame({"SenderAddress": ["c@x.com"], "Reported": ["o365"]})
+    final, _ = run(base, gophish=gp2, mimecast=mm_other, o365=o365c, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
 
     # a reported clicker KEEPS the click step 2 established - the lift only
     # touches rows still reading Not Found or User Click
