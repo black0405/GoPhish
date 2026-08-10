@@ -17,9 +17,9 @@ The steps built so far, over the whole Userbase file:
                            column only, no country filter anywhere
     5    Submitted         leftover (Not Found / User Click) whose GoPhish says
                            Submitted Data takes it - beats the reported lift
-    6    Reported          leftover + Reported Yes -> Email Opened; a reported
-                           Clicked Link lifts too when Mimecast never named
-                           the user, otherwise the click stands
+    6    Reported          leftover + Reported Yes -> Email Opened. A Clicked
+                           Link Mimecast never backed: reported -> Email
+                           Opened, unreported -> Email Sent; backed it stands
     7    Leftovers         leftovers FOUND IN MIMECAST take the GoPhish column
                            value as-is, Germany rows first then the rest; a
                            leftover Mimecast never named -> Email Sent (a
@@ -381,9 +381,10 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #      reported lift (they submitted, then reported). Any country.
     #   5. A GoPhish Submitted Data is definitive - it wins even over the
     #      reported lift (they submitted, then reported). Any country.
-    #   6. Reported leftovers lift to Email Opened. An established Clicked
-    #      Link lifts too when Mimecast never named the user; with a Mimecast
-    #      trail the click stands. Submitted Data always stands (step 5).
+    #   6. Reported leftovers lift to Email Opened. A Clicked Link Mimecast
+    #      never backed is doubted entirely: reported -> Email Opened,
+    #      unreported -> Email Sent. Backed by Mimecast the click stands,
+    #      and Submitted Data always stands (step 5).
     #   7. Leftovers FOUND IN MIMECAST take the GoPhish COLUMN value as-is -
     #      the Germany rows first, then everyone else. A leftover Mimecast
     #      never named keeps no GoPhish value: Email Sent (step 6 already
@@ -399,14 +400,19 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     snap("Step5_Submitted", base)
 
     log("  6   reported leftovers -> Email Opened")
-    # an established click STANDS when the user reported - UNLESS Mimecast
-    # never named them: a reported click with no Mimecast trail is doubted
-    # and lifts to Email Opened along with the unresolved rows
+    # a click with no Mimecast trail is doubted entirely: reported it lifts
+    # to Email Opened, unreported it settles to Email Sent. A click Mimecast
+    # backs up stands either way.
     yes = base[COL_REPORTED].eq("Yes")
-    fix = (unsettled() | (base[COL_OUTCOME].eq("Clicked Link") & ~mime_hit)) & yes
+    doubt = base[COL_OUTCOME].eq("Clicked Link") & ~mime_hit
+    fix = (unsettled() | doubt) & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     base.loc[fix, COL_SRC] = "6-reported-lift"
-    log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
+    drop = doubt & ~yes
+    base.loc[drop, COL_OUTCOME] = "Email Sent"
+    base.loc[drop, COL_SRC] = "6-click-drop"
+    log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}, "
+        f"unreported clicks with no Mimecast trail -> Email Sent: {int(drop.sum())}")
     snap("Step6_Reported", base)
 
     log("  7   leftovers Mimecast names take the GoPhish column value, Germany first, the rest Email Sent")
@@ -625,11 +631,15 @@ def fixtures():
     # clicked link event already settled them in step 4 anyway
     # de_mimeboth has both a GoPhish event and a Mimecast row: step 4 runs
     # first, so the GoPhish value must win and Mimecast must not touch them
+    # "clicked" is named here too: their 2.2 click has a Mimecast trail, so
+    # step 6 lets it stand (an unbacked click would drop to Email Sent)
     mimecast = pd.DataFrame({
         "To": ["opened@x.com", "submitted@x.com", "clickreported@x.com", "de_click@x.com",
-               "escalated@x.com", "escalated@x.com", "escalated@x.com", "de_mimeboth@x.com"],
+               "escalated@x.com", "escalated@x.com", "escalated@x.com", "de_mimeboth@x.com",
+               "clicked@x.com"],
         "Log Type": ["Email Opened", "Email Opened", "User Click", "User Click",
-                     "Email Sent", "User Click", "Email Opened", "Email Opened"]})
+                     "Email Sent", "User Click", "Email Opened", "Email Opened",
+                     "User Click"]})
     # value columns as in the real exports: O365 column K "Reported", SOC column
     # D "reported". The duplicate row pins XLOOKUP: the first row must win.
     o365 = pd.DataFrame({"SenderAddress": ["reported@x.com", "clickreported@x.com", "reported@x.com"],
@@ -842,6 +852,11 @@ def check_step5_spelling():
     assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
     final, _ = run(base, false_login_sso=sso2, soc=soc2, mimecast=mm2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
+    # unreported, the unbacked click settles to Email Sent instead
+    final, _ = run(base, false_login_sso=sso2, mimecast=mm_other, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Sent"], list(final[COL_OUTCOME])
+    final, _ = run(base, false_login_sso=sso2, mimecast=mm2, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
 
 def check_mimecast_columns():
@@ -971,7 +986,8 @@ def selftest():
     # trace: a false_login step matches any identity, the rest Employee Email only
     t = trace("clicked@x.com", fixtures())
     assert any(s.startswith("false_login_sso: MATCHED via Email") for s in t), t
-    assert any(s == "mimecast: not in the file" for s in t), t
+    assert any(s.startswith("mimecast: MATCHED via To") for s in t), t
+    assert any(s == "false_login: not in the file" for s in t), t
     assert any(s.startswith("gophish: MATCHED via email") and "Clicked Link" in s for s in t), t
     t = trace("submitted@x.com", dict(
         base=fixtures()["base"],
