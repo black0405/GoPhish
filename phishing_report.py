@@ -17,13 +17,12 @@ The steps built so far, over the whole Userbase file:
                            column only, no country filter anywhere
     5    Submitted         leftover (Not Found / User Click) whose GoPhish says
                            Submitted Data takes it - beats the reported lift
-    6    Reported          leftover + Reported Yes -> Email Opened; Submitted
-                           Data stands
+    6    Reported          leftover + Reported Yes -> Email Opened, and so is
+                           a reported Clicked Link; Submitted Data stands
     7    Leftovers         leftovers FOUND IN MIMECAST take the GoPhish column
                            value as-is, Germany rows first then the rest; a
                            leftover Mimecast never named -> Email Sent (a
-                           reported one was already lifted by step 6). At the
-                           very end any reported Clicked Link -> Email Opened
+                           reported one was already lifted by step 6)
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -379,13 +378,15 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # Click. Order matters and each pass only touches what is still left:
     #   5. A GoPhish Submitted Data is definitive - it wins even over the
     #      reported lift (they submitted, then reported). Any country.
-    #   6. Reported leftovers lift to Email Opened. Submitted Data stands
-    #      (step 5 ran first and is definitive).
+    #   5. A GoPhish Submitted Data is definitive - it wins even over the
+    #      reported lift (they submitted, then reported). Any country.
+    #   6. Reported leftovers lift to Email Opened - and so does an
+    #      established Clicked Link once the user reported. Submitted Data
+    #      stands (step 5 ran first and is definitive).
     #   7. Leftovers FOUND IN MIMECAST take the GoPhish COLUMN value as-is -
     #      the Germany rows first, then everyone else. A leftover Mimecast
     #      never named keeps no GoPhish value: Email Sent (step 6 already
-    #      lifted the reported ones to Email Opened). Then, with every row
-    #      settled, any reported Clicked Link is doubted -> Email Opened.
+    #      lifted the reported ones to Email Opened).
     unsettled = lambda: base[COL_OUTCOME].isin([NOT_FOUND, "User Click"])
     gp_val = lambda: ~base[COL_GOPHISH].isin(["", NOT_FOUND])
 
@@ -396,11 +397,11 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log(f"    {int(take.sum())} took Submitted Data")
     snap("Step5_Submitted", base)
 
-    log("  6   reported leftovers -> Email Opened")
-    # the lift touches only unresolved rows here; a reported CLICK is doubted
-    # too, but only at the very end, after step 7 has settled everything
+    log("  6   reported leftovers and reported clickers -> Email Opened")
+    # a reported CLICK is doubted - it lifts to Email Opened along with the
+    # unresolved rows. A Submitted Data stands even when reported (step 5).
     yes = base[COL_REPORTED].eq("Yes")
-    fix = unsettled() & yes
+    fix = (unsettled() | base[COL_OUTCOME].eq("Clicked Link")) & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     base.loc[fix, COL_SRC] = "6-reported-lift"
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
@@ -424,13 +425,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     base.loc[sent, COL_SRC] = "7-email-sent"
     took = int(base[COL_SRC].eq("7-gophish-take").sum())
     log(f"    {took} took their GoPhish value, {int(sent.sum())} -> Email Sent")
-    # the very last outcome pass: with every row settled, a Clicked Link that
-    # the user reported is doubted -> Email Opened. Whatever step wrote the
-    # click - 2.1, 2.2 or the step-7 take. Submitted Data stands.
-    lift = base[COL_OUTCOME].eq("Clicked Link") & yes
-    base.loc[lift, COL_OUTCOME] = "Email Opened"
-    base.loc[lift, COL_SRC] = "7-reported-click"
-    log(f"    reported clickers -> Email Opened: {int(lift.sum())}")
     snap("Step7_Leftovers", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
