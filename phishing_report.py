@@ -17,8 +17,8 @@ The steps built so far, over the whole Userbase file:
                            column only, no country filter anywhere
     5    Submitted         leftover (Not Found / User Click) whose GoPhish says
                            Submitted Data takes it - beats the reported lift
-    6    Reported          leftover + Reported Yes -> Email Opened; an already
-                           established Clicked Link stands even when reported
+    6    Reported          leftover + Reported Yes -> Email Opened, and so is
+                           a reported Clicked Link; Submitted Data stands
     7    Leftovers         leftovers FOUND IN MIMECAST take the GoPhish column
                            value as-is, Germany rows first then the rest; a
                            leftover Mimecast never named -> Email Sent (a
@@ -380,9 +380,9 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     #      reported lift (they submitted, then reported). Any country.
     #   5. A GoPhish Submitted Data is definitive - it wins even over the
     #      reported lift (they submitted, then reported). Any country.
-    #   6. Reported leftovers lift to Email Opened. An Outcome an earlier step
-    #      already established - a Clicked Link from the sso file, say - stands
-    #      even when the user reported.
+    #   6. Reported leftovers lift to Email Opened - and so does an
+    #      established Clicked Link once the user reported. Submitted Data
+    #      stands (step 5 ran first and is definitive).
     #   7. Leftovers FOUND IN MIMECAST take the GoPhish COLUMN value as-is -
     #      the Germany rows first, then everyone else. A leftover Mimecast
     #      never named keeps no GoPhish value: Email Sent (step 6 already
@@ -397,11 +397,11 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     log(f"    {int(take.sum())} took Submitted Data")
     snap("Step5_Submitted", base)
 
-    log("  6   reported leftovers -> Email Opened")
-    # a click that a step already established (the sso file, mostly) STANDS
-    # even when the user reported - the lift touches only unresolved rows
+    log("  6   reported leftovers and reported clickers -> Email Opened")
+    # a reported CLICK is doubted - it lifts to Email Opened along with the
+    # unresolved rows. A Submitted Data stands even when reported (step 5).
     yes = base[COL_REPORTED].eq("Yes")
-    fix = unsettled() & yes
+    fix = (unsettled() | base[COL_OUTCOME].eq("Clicked Link")) & yes
     base.loc[fix, COL_OUTCOME] = "Email Opened"
     base.loc[fix, COL_SRC] = "6-reported-lift"
     log(f"    Reported Yes: {int(yes.sum())}, lifted to Email Opened: {int(fix.sum())}")
@@ -829,11 +829,13 @@ def check_step5_spelling():
     final, _ = run(base, gophish=gp2, mimecast=mm_other, o365=o365c, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
 
-    # a reported clicker KEEPS the click step 2 established - the lift only
-    # touches rows still reading Not Found or User Click
+    # a reported clicker is doubted: the click step 2 established lifts to
+    # Email Opened; unreported it stands
     sso2 = pd.DataFrame({"Email": ["c@x.com"], "Outcome": ["Clicked Link"]})
     soc2 = pd.DataFrame({"User": ["c@x.com"], "reported": ["soc-support"]})
     final, _ = run(base, false_login_sso=sso2, soc=soc2, log=lambda *_: None)
+    assert list(final[COL_OUTCOME]) == ["Email Opened"], list(final[COL_OUTCOME])
+    final, _ = run(base, false_login_sso=sso2, log=lambda *_: None)
     assert list(final[COL_OUTCOME]) == ["Clicked Link"], list(final[COL_OUTCOME])
 
 
