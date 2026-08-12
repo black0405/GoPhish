@@ -501,10 +501,11 @@ def trace(email, srcs):
         found = {}   # column -> rows holding one of this step's identities
         other = []   # columns holding one of the OTHER identities
         for c in df.columns:
-            hit = norm(df[c]).isin(prim)
+            v = norm(df[c])
+            hit = v.isin(prim)
             if hit.any():
-                found[str(c)] = df.index[hit]
-            elif norm(df[c]).isin(idents).any():
+                found[str(c)] = (df.index[hit], v[hit].unique())
+            elif v.isin(idents).any():
                 other.append(str(c))
         reads = TRACE_READS[name]
         used = [c for c in found if any(r.casefold() == c.strip().casefold() for r in reads)]
@@ -512,9 +513,12 @@ def trace(email, srcs):
             vcol = col_of(df, [TRACE_VALS[name]], 99) if name in TRACE_VALS else None
             vals = ""
             if vcol is not None:
-                got = df.loc[[i for c in used for i in found[c]], vcol].dropna().unique()
+                got = df.loc[[i for c in used for i in found[c][0]], vcol].dropna().unique()
                 vals = f" -> {vcol}: {', '.join(map(repr, got[:6]))}"
-            out.append(f"{name}: MATCHED via {', '.join(used)}{vals}")
+            # which base identity the match came from - Employee Email vs an SSOUPN
+            who = {x for c in used for x in found[c][1]}
+            ident = "" if prim == {e} else f" [identity: {', '.join(sorted(who))}]"
+            out.append(f"{name}: MATCHED via {', '.join(used)}{vals}{ident}")
         elif found:
             out.append(f"{name}: ! sits in {', '.join(found)} but the step reads "
                        f"{', '.join(reads)} - MISSED, header differs")
