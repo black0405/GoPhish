@@ -23,6 +23,9 @@ The steps built so far, over the whole Userbase file:
                            value as-is, Germany rows first then the rest; a
                            leftover Mimecast never named -> Email Sent (a
                            reported one was already lifted by step 6)
+    9    Mime reconcile    Clicked Link + any Mimecast User Click + Reported
+                           Yes -> Email Opened; Clicked Link Mimecast never
+                           named -> Email Sent (skipped with no Mimecast file)
     8    Phished Yes/No    Yes for Submitted Data and Clicked Link, No otherwise
 
 Steps 2 and 3 share one Outcome column and step 4 fills GoPhish; in both, each
@@ -298,6 +301,8 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     # who Mimecast names at all - step 7 only trusts a GoPhish value for these;
     # with no Mimecast file the gate is off, so the take still works
     mime_hit = pd.Series(mimecast is None, index=base.index)
+    # who has ANY Mimecast User Click row - the step 9 reconcile reads this
+    mime_click = pd.Series(False, index=base.index)
     step("3", "Mimecast activity", mimecast is not None)
     if mimecast is not None:
         key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
@@ -307,6 +312,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         ok = k.notna()
         hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
         mime_hit = hit.notna()
+        mime_click = ident["Employee Email"].isin(set(k[ok & v.eq("User Click")]))
         fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
         base.loc[fill, COL_OUTCOME] = hit[fill]
         base.loc[fill, COL_SRC] = "3-mimecast"
@@ -426,6 +432,22 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     took = int(base[COL_SRC].eq("7-gophish-take").sum())
     log(f"    {took} took their GoPhish value, {int(sent.sum())} -> Email Sent")
     snap("Step7_Leftovers", base)
+
+    # --- step 9: reconcile the Clicked Link rows against Mimecast. A clicker
+    # Mimecast saw clicking (any User Click row) who reported lifts to Email
+    # Opened; a clicker Mimecast never named at all drops to Email Sent. Inert
+    # when no Mimecast file is supplied.
+    if mimecast is not None:
+        log("  9   Clicked Link vs Mimecast: reported User Click lifts, unnamed drops")
+        click = base[COL_OUTCOME].eq("Clicked Link")
+        lift = click & mime_click & yes
+        base.loc[lift, COL_OUTCOME] = "Email Opened"
+        base.loc[lift, COL_SRC] = "9-mime-lift"
+        drop = click & ~mime_hit
+        base.loc[drop, COL_OUTCOME] = "Email Sent"
+        base.loc[drop, COL_SRC] = "9-mime-drop"
+        log(f"    lifted {int(lift.sum())} to Email Opened, dropped {int(drop.sum())} to Email Sent")
+        snap("Step9_MimeReconcile", base)
 
     # --- step 8: Phished Yes/No. Yes for the two outcomes that mean the user
     # acted on the phish, No for every other settled outcome. A row whose Outcome
@@ -866,11 +888,12 @@ def selftest():
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
     assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
-                     "Step5_Submitted", "Step6_Reported", "Step7_Leftovers"], snaps
+                     "Step5_Submitted", "Step6_Reported", "Step7_Leftovers",
+                     "Step9_MimeReconcile"], snaps
     f = final.set_index("Employee Name")
 
     want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
-            "clicked": "Clicked Link",      # 2.2, matched via the AD identity
+            "clicked": "Email Sent",        # 2.2 click, but Mimecast never named them - step 9 drop
             # Mimecast runs before GoPhish, so its first row wins for anyone it
             # names; GoPhish acted events fill only what Mimecast left empty
             "opened": "Email Opened",       # Mimecast row; GoPhish only had Email Sent
