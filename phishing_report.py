@@ -69,7 +69,8 @@ NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISH
 # GoPhish value came from - they ride along in the report and the compare
 COL_SRC = "Outcome Step"
 COL_GPFILE = "GoPhish File"
-DIAG_COLS = [COL_SRC, COL_GPFILE]
+COL_MIME = "Mimecast"   # the user's first-row Log Type, Not Found if unnamed
+DIAG_COLS = [COL_SRC, COL_GPFILE, COL_MIME]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
 # each outcome step is every ID_COLS x <these> pair - the mapping tables in the SOP
@@ -307,6 +308,7 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         ok = k.notna()
         hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
         mime_hit = hit.notna()
+        base[COL_MIME] = hit.fillna(NOT_FOUND)   # ride-along: confirm per user what Mimecast says
         fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
         base.loc[fill, COL_OUTCOME] = hit[fill]
         base.loc[fill, COL_SRC] = "3-mimecast"
