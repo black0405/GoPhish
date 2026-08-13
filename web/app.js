@@ -83,9 +83,47 @@ function xhrUpload(key, file, onPct) {
   });
 }
 
+// which source card a filename belongs to - most specific pattern first
+function guessKey(name) {
+  const n = name.toLowerCase();
+  if (/mimecast/.test(n)) return 'mimecast';
+  if (/soc/.test(n)) return 'soc';
+  if (/365|o365|microsoft|report.?button/.test(n)) return 'o365';
+  if (/sso/.test(n)) return 'false_login_sso';
+  if (/false.?login|submitted/.test(n)) return 'false_login';
+  if (/non.?german/.test(n)) return 'gophish';
+  if (/german/.test(n)) return 'gophish_de';
+  if (/gophish|events/.test(n)) return 'gophish';
+  if (/base/.test(n)) return 'base';
+  return null;
+}
+
+const takers = {};   // key -> that card's upload function
+
+function routeAll(list) {
+  for (const f of list) {
+    const k = guessKey(f.name);
+    if (k && takers[k]) takers[k](f);
+    else toast('warn', `${f.name}: can't tell which source this is — drop it on its card`);
+  }
+}
+
 function buildDrops() {
   const wrap = $('drops');
   wrap.innerHTML = '';
+
+  // one drop for everything: each file is routed to its card by filename
+  const all = el('div', 'drop all');
+  all.innerHTML = `<div class="k">${FILE_ICON}<span>Drop ALL exports here</span><span class="st"></span></div>
+                   <div class="f">select or drop every file at once — routed by filename</div>
+                   <input type="file" multiple accept=".xlsx,.xls,.csv,.txt">`;
+  const allInput = all.querySelector('input');
+  allInput.addEventListener('change', () => { routeAll(allInput.files); allInput.value = ''; });
+  all.addEventListener('dragover', (e) => { e.preventDefault(); all.classList.add('over'); });
+  all.addEventListener('dragleave', () => all.classList.remove('over'));
+  all.addEventListener('drop', (e) => { e.preventDefault(); all.classList.remove('over'); routeAll(e.dataTransfer.files); });
+  wrap.appendChild(all);
+
   for (const [key, label, hint] of SOURCES) {
     const card = el('div', 'drop');
     card.innerHTML = `<div class="k">${FILE_ICON}<span>${esc(label)}</span><span class="st"></span></div>
@@ -129,10 +167,15 @@ function buildDrops() {
       $('run-btn').disabled = !(online && files.base);
     };
 
+    takers[key] = take;
     input.addEventListener('change', () => take(input.files[0]));
     card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('over'); });
     card.addEventListener('dragleave', () => card.classList.remove('over'));
-    card.addEventListener('drop', (e) => { e.preventDefault(); card.classList.remove('over'); take(e.dataTransfer.files[0]); });
+    card.addEventListener('drop', (e) => {
+      e.preventDefault(); card.classList.remove('over');
+      // several files on one card -> route them all by name instead
+      e.dataTransfer.files.length > 1 ? routeAll(e.dataTransfer.files) : take(e.dataTransfer.files[0]);
+    });
     wrap.appendChild(card);
   }
 }
