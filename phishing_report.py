@@ -5,10 +5,11 @@ The steps built so far, over the whole Userbase file:
 
     1.1  Reported to O365  SenderAddress (C) -> Reported (K)
     1.2  Reported to SOC   User (C) -> reported (D)
-    2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G)
+    3    Mimecast          RUNS FIRST: To (C) -> Log Type (N), first row per
+                           user; its value wins over the false-login files
+    2.1  false_login       Username / Email (SSO) (D, E) -> its Outcome (G),
+                           only rows Mimecast left empty
     2.2  false_login_sso   Email (D) -> its Outcome (G)
-    3    Mimecast          To (C) -> Log Type (N), first row per user, only
-                           rows step 2 left empty
     4.1  GoPhish           email (B) -> message (D) into the GoPhish column
                            ONLY, Linux rows excluded first; clicked link sheet,
                            then email sent, leftovers Not Found
@@ -259,6 +260,29 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     base[COL_REPORTED] = (hit_col(COL_O365) | hit_col(COL_SOC)).map({True: "Yes", False: "No"})
     snap("Step1_Reporting", base)
 
+    # --- step 3: Mimecast - runs FIRST, before the false-login steps, so its
+    # Log Type wins for anyone it names (a User Click row then rides the step 6
+    # reported lift to Email Opened instead of keeping the sso Clicked Link).
+    # Employee Email against To (column C), taking Log Type (column N).
+    # who Mimecast names at all - step 7 only trusts a GoPhish value for these;
+    # with no Mimecast file the gate is off, so the take still works
+    mime_hit = pd.Series(mimecast is None, index=base.index)
+    step("3", "Mimecast activity (first)", mimecast is not None)
+    if mimecast is not None:
+        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
+        k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
+        # XLOOKUP semantics: a user with several Mimecast rows takes the FIRST
+        # row in the file, not the strongest event
+        ok = k.notna()
+        hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
+        mime_hit = hit.notna()
+        fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
+        base.loc[fill, COL_OUTCOME] = hit[fill]
+        base.loc[fill, COL_SRC] = "3-mimecast"
+        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
+        log(f"    -> {int(fill.sum())} set")
+    snap("Step3_Mimecast", base)
+
     # --- step 2: false logins, XLOOKUP-style. For each (base identity x source
     # column) pair IN ORDER - S->D, S->E, AD->D, AD->E, AG->D, AG->E - a hit
     # copies that row's own Outcome value (column G). Each later pair fills only
@@ -291,29 +315,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
     if false_login_sso is not None:
         outcome_fill(false_login_sso, FALSE_LOGIN_SSO_COLS, "Clicked Link", "2.2")
     snap("Step2_FalseLogin", base)
-
-    # --- step 3: Mimecast - runs before GoPhish, so its value wins for anyone
-    # it names. Employee Email against To (column C), taking Log Type (column
-    # N). Only fills rows step 2 left empty.
-    # who Mimecast names at all - step 7 only trusts a GoPhish value for these;
-    # with no Mimecast file the gate is off, so the take still works
-    mime_hit = pd.Series(mimecast is None, index=base.index)
-    step("3", "Mimecast activity", mimecast is not None)
-    if mimecast is not None:
-        key, val = col_of(mimecast, ["To"], 2), col_of(mimecast, ["Log Type", "LogType"], 13)
-        k, v = norm(mimecast[key]), canon_log_type(mimecast[val], log)
-        # XLOOKUP semantics: a user with several Mimecast rows takes the FIRST
-        # row in the file, not the strongest event
-        ok = k.notna()
-        hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
-        mime_hit = hit.notna()
-        fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
-        base.loc[fill, COL_OUTCOME] = hit[fill]
-        base.loc[fill, COL_SRC] = "3-mimecast"
-        log(f"    Employee Email <- {key} -> {val}: {int(hit.notna().sum())} matched")
-        log(f"    -> {int(fill.sum())} set, "
-            f"{int((hit.notna() & ~fill).sum())} already resolved by an earlier check")
-    snap("Step3_Mimecast", base)
 
     # --- step 4: GoPhish - the GoPhish column ONLY, never Outcome, and no
     # country filter. The events file is split into sheets first - the Linux
@@ -718,15 +719,15 @@ def check_outcome_pairs():
         final, _ = run(base, log=lambda *_: None, **{kw: src})
         assert list(final[COL_OUTCOME]) == ["Email Sent"], f"{kw} matched an unlisted column"
 
-    # each check only fills what is still unresolved, so the earliest one that
-    # matches a user wins - 2.1 over 2.2, and both over Mimecast
+    # each check only fills what is still unresolved - Mimecast runs FIRST and
+    # wins over both false-login files; 2.1 wins over 2.2 for the rest
     base = pd.DataFrame({"Employee Email": ["both@x.com", "clicked@x.com"]})
     both = lambda **kw: run(base, log=lambda *_: None, **kw)[0][COL_OUTCOME].tolist()
     fl = pd.DataFrame({"Username": ["both@x.com"]})
     sso = pd.DataFrame({"Email": ["both@x.com", "clicked@x.com"]})
     mm = pd.DataFrame({"To": ["both@x.com", "clicked@x.com"], "Log Type": ["Email Sent", "Email Sent"]})
     assert both(false_login=fl, false_login_sso=sso) == ["Submitted Data", "Clicked Link"]
-    assert both(false_login=fl, false_login_sso=sso, mimecast=mm) == ["Submitted Data", "Clicked Link"]
+    assert both(false_login=fl, false_login_sso=sso, mimecast=mm) == ["Email Sent", "Email Sent"]
     assert both(mimecast=mm) == ["Email Sent", "Email Sent"]
 
 
@@ -865,11 +866,11 @@ def selftest():
     check_gophish_file_order()
     snaps = []
     final, books = run(log=lambda *_: None, snap=lambda n, d: snaps.append(n), **fixtures())
-    assert snaps == ["Step1_Reporting", "Step2_FalseLogin", "Step3_Mimecast", "Step4_GoPhish",
+    assert snaps == ["Step1_Reporting", "Step3_Mimecast", "Step2_FalseLogin", "Step4_GoPhish",
                      "Step5_Submitted", "Step6_Reported", "Step7_Leftovers"], snaps
     f = final.set_index("Employee Name")
 
-    want = {"submitted": "Submitted Data",  # 2.1 keeps it; step 4 may not overwrite
+    want = {"submitted": "Email Opened",    # Mimecast runs first now and wins over 2.1
             "clicked": "Clicked Link",      # 2.2, matched via the AD identity
             # Mimecast runs before GoPhish, so its first row wins for anyone it
             # names; GoPhish acted events fill only what Mimecast left empty
@@ -897,7 +898,8 @@ def selftest():
     blank, _ = run(pd.DataFrame({"Employee Email": ["a@x.com"]}), log=lambda *_: None)
     assert list(blank[COL_PHISHED]) == [""], list(blank[COL_PHISHED])
     # the diagnostics name the writing step and the value's file
-    assert f.loc["submitted", COL_SRC] == "2.1", f.loc["submitted", COL_SRC]
+    assert f.loc["submitted", COL_SRC] == "3-mimecast", f.loc["submitted", COL_SRC]
+    assert f.loc["de_keep", COL_SRC] == "2.1", f.loc["de_keep", COL_SRC]
     assert f.loc["opened", COL_SRC] == "3-mimecast", f.loc["opened", COL_SRC]
     assert f.loc["de_sub", COL_SRC] == "5-gophish-take", f.loc["de_sub", COL_SRC]
     assert f.loc["reported", COL_SRC] == "6-reported-lift", f.loc["reported", COL_SRC]
