@@ -69,8 +69,7 @@ NEW_COLS = [COL_OUTCOME, COL_GOPHISH, COL_O365, COL_SOC, COL_REPORTED, COL_PHISH
 # GoPhish value came from - they ride along in the report and the compare
 COL_SRC = "Outcome Step"
 COL_GPFILE = "GoPhish File"
-COL_MIME = "Mimecast"   # the user's first-row Log Type, Not Found if unnamed
-DIAG_COLS = [COL_SRC, COL_GPFILE, COL_MIME]
+DIAG_COLS = [COL_SRC, COL_GPFILE]
 
 ID_COLS = ["Employee Email", "SSOUPN as per Saviynt", "SSOUPN as per AD (O365)"]
 # each outcome step is every ID_COLS x <these> pair - the mapping tables in the SOP
@@ -308,7 +307,6 @@ def run(base, false_login=None, false_login_sso=None, mimecast=None,
         ok = k.notna()
         hit = ident["Employee Email"].map(dict(zip(k[ok][::-1], v[ok][::-1])))
         mime_hit = hit.notna()
-        base[COL_MIME] = hit.fillna(NOT_FOUND)   # ride-along: confirm per user what Mimecast says
         fill = hit.notna() & hit.ne("") & base[COL_OUTCOME].eq("")
         base.loc[fill, COL_OUTCOME] = hit[fill]
         base.loc[fill, COL_SRC] = "3-mimecast"
@@ -503,11 +501,10 @@ def trace(email, srcs):
         found = {}   # column -> rows holding one of this step's identities
         other = []   # columns holding one of the OTHER identities
         for c in df.columns:
-            v = norm(df[c])
-            hit = v.isin(prim)
+            hit = norm(df[c]).isin(prim)
             if hit.any():
-                found[str(c)] = (df.index[hit], v[hit].unique())
-            elif v.isin(idents).any():
+                found[str(c)] = df.index[hit]
+            elif norm(df[c]).isin(idents).any():
                 other.append(str(c))
         reads = TRACE_READS[name]
         used = [c for c in found if any(r.casefold() == c.strip().casefold() for r in reads)]
@@ -515,12 +512,9 @@ def trace(email, srcs):
             vcol = col_of(df, [TRACE_VALS[name]], 99) if name in TRACE_VALS else None
             vals = ""
             if vcol is not None:
-                got = df.loc[[i for c in used for i in found[c][0]], vcol].dropna().unique()
+                got = df.loc[[i for c in used for i in found[c]], vcol].dropna().unique()
                 vals = f" -> {vcol}: {', '.join(map(repr, got[:6]))}"
-            # which base identity the match came from - Employee Email vs an SSOUPN
-            who = {x for c in used for x in found[c][1]}
-            ident = "" if prim == {e} else f" [identity: {', '.join(sorted(who))}]"
-            out.append(f"{name}: MATCHED via {', '.join(used)}{vals}{ident}")
+            out.append(f"{name}: MATCHED via {', '.join(used)}{vals}")
         elif found:
             out.append(f"{name}: ! sits in {', '.join(found)} but the step reads "
                        f"{', '.join(reads)} - MISSED, header differs")
